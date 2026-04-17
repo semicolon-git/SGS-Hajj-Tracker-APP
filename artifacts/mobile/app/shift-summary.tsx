@@ -1,7 +1,7 @@
 import { Feather } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useEffect, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Alert, Platform, Share, ScrollView, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { PrimaryButton } from "@/components/PrimaryButton";
@@ -12,10 +12,12 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useLocale } from "@/contexts/LocaleContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
 import { useSession } from "@/contexts/SessionContext";
+import { sgsApi } from "@/lib/api/sgs";
 import {
   getCachedManifest,
   getScannedTags,
 } from "@/lib/db/storage";
+import { buildShiftReport } from "@/lib/shiftReport";
 
 export default function ShiftSummaryScreen() {
   const router = useRouter();
@@ -28,6 +30,11 @@ export default function ShiftSummaryScreen() {
   const [scanned, setScanned] = useState(0);
   const [expected, setExpected] = useState(0);
   const [exceptionCount, setExceptionCount] = useState(0);
+  const [scannedSet, setScannedSet] = useState<Set<string>>(new Set());
+  const [manifestCache, setManifestCache] = useState<
+    Awaited<ReturnType<typeof getCachedManifest>>
+  >(null);
+  const [sending, setSending] = useState(false);
 
   useEffect(() => {
     if (!session.session) return;
@@ -40,6 +47,8 @@ export default function ShiftSummaryScreen() {
       setExceptionCount(
         manifest.filter((b) => b.status === "exception").length,
       );
+      setScannedSet(tags);
+      setManifestCache(manifest);
     })();
   }, [session.session]);
 
@@ -59,6 +68,93 @@ export default function ShiftSummaryScreen() {
   const onEndShift = async () => {
     await session.setSession(null);
     router.replace("/session-setup");
+  };
+
+  const onSendToSupervisor = async () => {
+    if (sending || !session.session) return;
+    setSending(true);
+    try {
+      const report = buildShiftReport({
+        flight: session.session.flight,
+        group: session.session.group,
+        startedAt: session.session.startedAt,
+        endedAt: new Date().toISOString(),
+        manifest: manifestCache ?? [],
+        scannedTags: scannedSet,
+        queue: {
+          pending: queue.queueSize,
+          failed: queue.deadLetterSize,
+          online: queue.online,
+          lastSyncAt: auth.lastSyncAt,
+        },
+        agent: auth.user ? { id: auth.user.id, name: auth.user.name } : null,
+      });
+
+      // Step 1: hand the snapshot to the OS share sheet so the agent can
+      // pick Mail / Messages / AirDrop / etc. We send plain text in
+      // `message` (universally supported) and include the title separately
+      // for share targets like Mail.
+      let shared = false;
+      try {
+        if (Platform.OS === "web") {
+          // RN-Web's Share polyfill is unreliable; fall through to a
+          // mailto: link which always opens the default mail client.
+          const subject = `SGS Shift Summary — ${report.flightNumber} / ${report.groupLabel}`;
+          const url = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(report.text)}`;
+          if (typeof window !== "undefined") {
+            window.location.href = url;
+            shared = true;
+          }
+        } else {
+          const result = await Share.share({
+            title: `SGS Shift Summary — ${report.flightNumber} / ${report.groupLabel}`,
+            message: report.text,
+          });
+          shared = result.action !== Share.dismissedAction;
+        }
+      } catch {
+        shared = false;
+      }
+
+      // Step 2: best-effort audit POST so supervisors see the snapshot in
+      // the dashboard. If the backend doesn't have the route yet we do not
+      // treat that as a failure — the agent has already shared the report.
+      let recorded = false;
+      if (queue.online) {
+        try {
+          const res = await sgsApi.submitShiftReport({
+            reportId: report.reportId,
+            flightId: report.flightId,
+            flightGroupId: report.groupId,
+            startedAt: report.startedAt,
+            endedAt: report.endedAt,
+            totals: report.totals,
+            exceptionTags: report.exceptions.map((e) => e.tagNumber),
+            queue: {
+              pending: report.queue.pending,
+              failed: report.queue.failed,
+              online: report.queue.online,
+            },
+            summaryText: report.text,
+            summaryHtml: report.html,
+            deliveryChannel: "share",
+          });
+          recorded = res.recorded;
+        } catch {
+          recorded = false;
+        }
+      }
+
+      if (!shared && !recorded) {
+        Alert.alert(t("shiftSummary"), t("reportFailed"));
+      } else if (recorded) {
+        Alert.alert(t("shiftSummary"), t("reportSent"));
+      } else {
+        Alert.alert(t("shiftSummary"), t("reportShared"));
+      }
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -141,6 +237,12 @@ export default function ShiftSummaryScreen() {
         </View>
 
         <View style={{ height: 16 }} />
+        <PrimaryButton
+          label={sending ? t("sending") : t("sendToSupervisor")}
+          onPress={onSendToSupervisor}
+          disabled={sending}
+        />
+        <View style={{ height: 8 }} />
         <PrimaryButton
           label={t("endShift")}
           onPress={onEndShift}

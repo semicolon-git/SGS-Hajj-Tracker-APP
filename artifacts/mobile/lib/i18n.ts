@@ -82,6 +82,11 @@ const en = {
   resumeSession: "Resume session",
   shiftEnded: "Shift ended",
   duration: "Duration",
+  sendToSupervisor: "Send to supervisor",
+  sending: "Sending…",
+  reportSent: "Report sent to supervisor.",
+  reportShared: "Report shared. Server audit not available — keep a copy.",
+  reportFailed: "Could not share the report. Please try again.",
 
   // Bulk receive
   bulkReceiveTitle: "Bulk Receive",
@@ -175,6 +180,11 @@ const ar: Dict = {
   resumeSession: "متابعة الوردية",
   shiftEnded: "تم إنهاء الوردية",
   duration: "المدة",
+  sendToSupervisor: "إرسال إلى المشرف",
+  sending: "جارٍ الإرسال…",
+  reportSent: "تم إرسال التقرير إلى المشرف.",
+  reportShared: "تمت مشاركة التقرير. لم يُسجَّل في الخادم — احتفظ بنسخة.",
+  reportFailed: "تعذّر مشاركة التقرير. حاول مرة أخرى.",
 
   bulkReceiveTitle: "استلام دفعة",
   bulkReceiveSub: "امسح أو الصق بطاقات تسلّمتها من زميل.",

@@ -461,6 +461,68 @@ export const sgsApi = {
     return { id };
   },
 
+  /**
+   * Submits a shift summary snapshot for supervisor audit.
+   *
+   * The endpoint is best-effort: the live SGS backend may not yet expose
+   * `/api/shift-reports`, so callers should treat a 404 as "audit unavailable"
+   * rather than a hard failure — the agent has still produced and shared the
+   * report locally.
+   *
+   * Returns `{ recorded: true }` on success, `{ recorded: false, reason }` if
+   * the server has not been upgraded with the audit route yet.
+   */
+  submitShiftReport: async (input: {
+    reportId: string;
+    flightId: string;
+    flightGroupId: string;
+    startedAt: string;
+    endedAt: string;
+    totals: {
+      expected: number;
+      scanned: number;
+      remaining: number;
+      exceptions: number;
+      matchPct: number;
+    };
+    exceptionTags: string[];
+    queue: { pending: number; failed: number; online: boolean };
+    summaryText: string;
+    summaryHtml: string;
+    deliveryChannel: "share" | "email" | "manual";
+  }): Promise<{ recorded: boolean; reason?: string; id?: string }> => {
+    try {
+      const res = await request<{ id?: string | number }>(
+        "/api/shift-reports",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            reportId: input.reportId,
+            flightId: input.flightId,
+            flightGroupId: input.flightGroupId,
+            startedAt: input.startedAt,
+            endedAt: input.endedAt,
+            totals: input.totals,
+            exceptionTags: input.exceptionTags,
+            queue: input.queue,
+            summaryText: input.summaryText,
+            summaryHtml: input.summaryHtml,
+            deliveryChannel: input.deliveryChannel,
+          }),
+        },
+      );
+      return { recorded: true, id: res.id ? String(res.id) : undefined };
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+        // The backend doesn't expose the audit route on this deployment.
+        // The agent has already received/shared the snapshot, so we degrade
+        // gracefully instead of surfacing a scary error.
+        return { recorded: false, reason: "audit_endpoint_unavailable" };
+      }
+      throw err;
+    }
+  },
+
   registerNoTag: async (input: {
     pilgrimName: string;
     groupId: string;
