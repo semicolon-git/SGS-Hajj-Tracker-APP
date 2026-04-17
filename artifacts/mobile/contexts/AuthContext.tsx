@@ -12,9 +12,12 @@ import { AppState, Platform } from "react-native";
 import { sgsApi, setAuthToken } from "@/lib/api/sgs";
 
 const TOKEN_KEY = "sgs.authToken";
-const REFRESH_KEY = "sgs.refreshToken";
 const USER_KEY = "sgs.authUser";
 const LAST_SYNC_KEY = "sgs.lastSyncAt";
+// Legacy key kept only for cleanup on sign-out so existing installs don't
+// hold a stale refresh token in SecureStore. The live SGS backend uses an
+// HTTP-only refresh cookie instead.
+const LEGACY_REFRESH_KEY = "sgs.refreshToken";
 
 type User = { id: string; name: string; role: string };
 
@@ -92,9 +95,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       await Promise.all([
         secureSet(TOKEN_KEY, res.token),
         secureSet(USER_KEY, JSON.stringify(res.user)),
-        res.refreshToken
-          ? secureSet(REFRESH_KEY, res.refreshToken)
-          : Promise.resolve(),
       ]);
       await recordSync();
     },
@@ -102,25 +102,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const refreshSession = useCallback(async (): Promise<boolean> => {
-    const rt = await secureGet(REFRESH_KEY);
-    if (!rt) return false;
-    try {
-      const res = await sgsApi.refresh(rt);
-      setAuthToken(res.token);
-      setToken(res.token);
-      setUser(res.user);
-      await Promise.all([
-        secureSet(TOKEN_KEY, res.token),
-        secureSet(USER_KEY, JSON.stringify(res.user)),
-        res.refreshToken
-          ? secureSet(REFRESH_KEY, res.refreshToken)
-          : Promise.resolve(),
-      ]);
-      await recordSync();
-      return true;
-    } catch {
-      return false;
-    }
+    // Refresh uses the HTTP-only cookie set by /api/auth/login, so there is
+    // no client-held refresh token. Returns null when the cookie is missing
+    // or expired.
+    const res = await sgsApi.refresh();
+    if (!res) return false;
+    setAuthToken(res.token);
+    setToken(res.token);
+    if (res.user.id) setUser(res.user);
+    await Promise.all([
+      secureSet(TOKEN_KEY, res.token),
+      res.user.id ? secureSet(USER_KEY, JSON.stringify(res.user)) : Promise.resolve(),
+    ]);
+    await recordSync();
+    return true;
   }, [recordSync]);
 
   // Silent refresh on foreground. Try the refresh endpoint first; if that
@@ -143,7 +138,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           await Promise.all([
             secureDel(TOKEN_KEY),
             secureDel(USER_KEY),
-            secureDel(REFRESH_KEY),
+            secureDel(LEGACY_REFRESH_KEY),
           ]);
         }
       }
@@ -158,7 +153,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     await Promise.all([
       secureDel(TOKEN_KEY),
       secureDel(USER_KEY),
-      secureDel(REFRESH_KEY),
+      secureDel(LEGACY_REFRESH_KEY),
     ]);
   }, []);
 
