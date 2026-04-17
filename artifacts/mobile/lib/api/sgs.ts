@@ -131,78 +131,126 @@ export interface ScanResponse {
 
 interface ServerLoginBody {
   token?: string;
-  user?: { id?: string | number; name?: string; username?: string; role?: string };
+  user?: {
+    id?: string | number;
+    name?: string;
+    fullName?: string;
+    username?: string;
+    role?: string;
+  };
 }
 
+// Verified against sgshajj.semicolon.sa on 2026-04-17. The server returns
+// `flightNo` and `scheduledTime`; older builds used `flightNumber` /
+// `scheduledDeparture`, so we accept either.
 interface ServerFlight {
   id: string;
-  flightNumber: string;
+  flightNo?: string;
+  flightNumber?: string;
   destination?: string;
   arrivalAirport?: string;
   departureAirport?: string;
+  originAirport?: string;
+  scheduledTime?: string;
   departureTime?: string;
   scheduledDeparture?: string;
+  flightDate?: string;
   assigned?: boolean;
   bagCount?: number;
   totalBags?: number;
+  scannedBags?: number;
 }
 
+// Flight groups on the server are keyed by accommodation, not a group number.
+// We surface `accommodationName` as the user-visible label since agents speak
+// about "the Movenpick group" rather than a numeric id.
 interface ServerFlightGroup {
   id: string;
   flightId: string;
   groupNumber?: string;
   groupName?: string;
+  accommodationName?: string;
+  terminalCode?: string | null;
   pilgrimCount?: number;
   expectedBagCount?: number;
   expectedBags?: number;
+  actualBagCount?: number;
   scannedBagCount?: number;
   scannedBags?: number;
   assigned?: boolean;
 }
 
+// Bag shape verified live: the real status field is `currentStatus` with
+// values like MANIFESTED / COLLECTED_FROM_BELT / EXCEPTION / LOADED /
+// DELIVERED. An open exception is also flagged via `exceptionWorkflowStatus`.
 interface ServerBag {
   id?: string;
   bagTag: string;
-  pilgrimName?: string;
+  pilgrimName?: string | null;
   flightId?: string;
   flightGroupId?: string;
   groupId?: string;
   status?: string;
+  currentStatus?: string;
+  exceptionWorkflowStatus?: string | null;
+  exceptionType?: string | null;
+  noTag?: boolean;
+  surrogateTag?: string | null;
 }
 
 function normalizeFlight(f: ServerFlight): Flight {
   return {
     id: String(f.id),
-    flightNumber: f.flightNumber,
-    destination: f.destination ?? f.arrivalAirport ?? "",
-    departureTime: f.departureTime ?? f.scheduledDeparture ?? "",
+    flightNumber: f.flightNo ?? f.flightNumber ?? "",
+    destination:
+      f.destination ?? f.arrivalAirport ?? f.originAirport ?? "",
+    departureTime:
+      f.scheduledTime ?? f.departureTime ?? f.scheduledDeparture ?? f.flightDate ?? "",
     assigned: f.assigned,
     bagCount: f.bagCount ?? f.totalBags ?? 0,
   };
 }
 
 function normalizeGroup(g: ServerFlightGroup): BagGroup {
+  // On the live SGS backend the operationally-recognised label for a group
+  // is the accommodation name ("Movenpick Hotel Jeddah"), so we prefer it
+  // first. groupNumber/groupName are kept as fallbacks for older builds
+  // that might expose them, and we finally fall back to terminalCode or a
+  // short id slice so the UI never surfaces a raw UUID.
+  const label =
+    g.accommodationName ??
+    g.groupNumber ??
+    g.groupName ??
+    (g.terminalCode ? `Terminal ${g.terminalCode}` : undefined) ??
+    String(g.id).slice(0, 8);
   return {
     id: String(g.id),
     flightId: String(g.flightId),
-    groupNumber: g.groupNumber ?? g.groupName ?? String(g.id),
+    groupNumber: label,
     pilgrimCount: g.pilgrimCount ?? 0,
     expectedBags: g.expectedBags ?? g.expectedBagCount ?? 0,
+    // Server doesn't expose a per-group scanned counter on the list endpoint;
+    // scan progress is computed from the manifest once the group is opened.
     scannedBags: g.scannedBags ?? g.scannedBagCount ?? 0,
     assigned: g.assigned,
   };
 }
 
 function normalizeBag(b: ServerBag): ManifestBag {
-  const raw = (b.status ?? "pending").toLowerCase();
-  const status: ManifestBag["status"] =
-    raw === "scanned" || raw === "received" || raw === "loaded"
-      ? "scanned"
-      : raw === "missing"
-        ? "missing"
-        : raw === "exception" || raw === "damaged"
-          ? "exception"
-          : "pending";
+  const raw = (b.currentStatus ?? b.status ?? "MANIFESTED").toUpperCase();
+  let status: ManifestBag["status"];
+  if (raw === "EXCEPTION" || b.exceptionWorkflowStatus === "OPEN") {
+    status = "exception";
+  } else if (raw === "MANIFESTED" || raw === "PENDING") {
+    status = "pending";
+  } else if (raw === "MISSING") {
+    status = "missing";
+  } else {
+    // Everything post-belt (COLLECTED_FROM_BELT, RECEIVED, LOADED,
+    // IN_TRANSIT, DELIVERED, HANDED_TO_DRIVER, ARRIVED_AT_LOCATION, etc.)
+    // counts as scanned from the agent's perspective.
+    status = "scanned";
+  }
   return {
     tagNumber: b.bagTag,
     pilgrimName: b.pilgrimName ?? "",
@@ -210,6 +258,27 @@ function normalizeBag(b: ServerBag): ManifestBag {
     flightId: String(b.flightId ?? ""),
     status,
   };
+}
+
+// RFC 4122 v4 UUID, good enough for correlation IDs. The backend validates
+// scan events with a strict uuid schema so we cannot reuse our local
+// "deviceId:timestamp" style here.
+function uuidv4(): string {
+  // 8-4-4-4-12 hex pattern
+  const hex = "0123456789abcdef";
+  let out = "";
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) {
+      out += "-";
+    } else if (i === 14) {
+      out += "4";
+    } else if (i === 19) {
+      out += hex[(Math.random() * 4) | 0 | 8];
+    } else {
+      out += hex[(Math.random() * 16) | 0];
+    }
+  }
+  return out;
 }
 
 // ---------- Endpoints ----------
@@ -229,7 +298,7 @@ export const sgsApi = {
       token: body.token,
       user: {
         id: String(u.id ?? username),
-        name: u.name ?? u.username ?? username,
+        name: u.fullName ?? u.name ?? u.username ?? username,
         role: u.role ?? "agent",
       },
     };
@@ -249,7 +318,7 @@ export const sgsApi = {
         token: body.token,
         user: {
           id: String(u.id ?? ""),
-          name: u.name ?? u.username ?? "",
+          name: u.fullName ?? u.name ?? u.username ?? "",
           role: u.role ?? "agent",
         },
       };
@@ -291,32 +360,51 @@ export const sgsApi = {
   // current state; we surface its decision to callers.
   submitScan: async (scan: ScanRequest): Promise<ScanResponse> => {
     try {
+      // The server returns { event, bag } on success (201) and enforces:
+      //   - eventType must be a concrete enum value (belt agents send
+      //     COLLECTED_FROM_BELT)
+      //   - correlationId must be a UUID
+      // Duplicate / wrong-group / missing-permission conditions are surfaced
+      // as 403/404 which we translate into ScanResponse results below.
       const res = await request<{
-        ok?: boolean;
-        result?: ScanResponse["result"];
-        message?: string;
+        event?: { id?: string };
         bag?: ServerBag;
       }>(`/api/bags/${encodeURIComponent(scan.tagNumber)}/events`, {
         method: "POST",
         body: JSON.stringify({
-          eventType: "SCAN",
+          eventType: "COLLECTED_FROM_BELT",
           flightGroupId: scan.groupId,
           flightId: scan.flightId,
           locationName: scan.source,
-          correlationId: scan.deviceId
-            ? `${scan.deviceId}:${scan.scannedAt}`
-            : scan.scannedAt,
+          correlationId: uuidv4(),
         }),
       });
-      return {
-        result: res.result ?? "match",
-        bag: res.bag ? normalizeBag(res.bag) : undefined,
-        message: res.message,
-      };
+      const normalized = res.bag ? normalizeBag(res.bag) : undefined;
+      // If the server echoes a bag that belongs to a different group, flag it
+      // as wrong_group so the UI can warn the agent.
+      if (normalized && normalized.groupId && normalized.groupId !== scan.groupId) {
+        return { result: "wrong_group", bag: normalized };
+      }
+      return { result: "match", bag: normalized };
     } catch (err) {
-      // 404 from the events endpoint means the tag isn't on any manifest.
-      if (err instanceof ApiError && err.status === 404) {
-        return { result: "unknown", message: err.message };
+      if (err instanceof ApiError) {
+        // 404 from the events endpoint means the tag isn't on any manifest.
+        if (err.status === 404) {
+          return { result: "unknown", message: err.message };
+        }
+        // 409 (conflict) is the only status we treat as a benign duplicate.
+        // Everything else — including 403 authorization/state errors — must
+        // rethrow so the queue sync retries and, if necessary, moves the
+        // scan to the dead-letter store rather than silently dropping it.
+        if (err.status === 409) {
+          return { result: "duplicate", message: err.message };
+        }
+        // Some backends return 400 with a duplicate-state message. Detect
+        // that narrowly via the error message text instead of a blanket
+        // status-code mapping so real validation errors still bubble up.
+        if (err.status === 400 && /duplicate|already\s+(scanned|collected)/i.test(err.message)) {
+          return { result: "duplicate", message: err.message };
+        }
       }
       throw err;
     }
@@ -327,23 +415,32 @@ export const sgsApi = {
     groupId: string;
     flightId: string;
     reason: string;
+    /** Stage the exception was raised at. Defaults to "BELT" for belt agents. */
+    stage?: "BELT" | "LOADING" | "TRANSIT" | "DELIVERY";
     notes?: string;
     photoBase64?: string;
   }): Promise<{ id: string }> => {
-    const res = await request<{ id?: string | number; exceptionId?: string }>(
+    // The server requires `exceptionStage` (zod-validated) and returns the
+    // full bag record on success — the bag's `id` is the canonical handle.
+    const res = await request<{
+      id?: string | number;
+      exceptionId?: string;
+      bagTag?: string;
+    }>(
       "/api/exceptions/raise",
       {
         method: "POST",
         body: JSON.stringify({
           bagTag: input.tagNumber,
           exceptionType: input.reason,
+          exceptionStage: input.stage ?? "BELT",
           flightId: input.flightId,
           flightGroupId: input.groupId,
           note: input.notes,
         }),
       },
     );
-    const id = String(res.id ?? res.exceptionId ?? "");
+    const id = String(res.id ?? res.exceptionId ?? res.bagTag ?? "");
     if (!id) {
       throw new ApiError("Exception submission missing id", 502, res);
     }
