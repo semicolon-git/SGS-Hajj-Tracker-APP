@@ -22,8 +22,7 @@ import {
   markTagScanned,
   moveOpToDeadLetter,
   moveToDeadLetter,
-  replaceManifestTag,
-  replaceScannedTag,
+  reconcilePlaceholderTag,
   setOpQueue,
   setQueue,
   type ExceptionOpPayload,
@@ -213,19 +212,16 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
         });
         // Reconcile every local store that may hold the placeholder so
         // post-sync queries / counts reference the canonical backend tag.
+        // This includes scanned set, cached manifest, queued scans,
+        // scan dead-letter, and any pending / failed exception ops
+        // raised against the placeholder — without this, retries would
+        // hit the backend with a tag it never issued.
         if (res.tagNumber && res.tagNumber !== item.payload.placeholderTag) {
-          await Promise.all([
-            replaceScannedTag(
-              item.payload.groupId,
-              item.payload.placeholderTag,
-              res.tagNumber,
-            ),
-            replaceManifestTag(
-              item.payload.groupId,
-              item.payload.placeholderTag,
-              res.tagNumber,
-            ),
-          ]);
+          await reconcilePlaceholderTag(
+            item.payload.groupId,
+            item.payload.placeholderTag,
+            res.tagNumber,
+          );
         }
         return { ok: true, finalTag: res.tagNumber, id: res.id };
       } catch (err) {

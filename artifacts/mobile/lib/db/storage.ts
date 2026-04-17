@@ -390,6 +390,73 @@ export async function replaceManifestTag(
   }
 }
 
+/**
+ * Rewrite a placeholder tag to the backend-issued tag everywhere it may
+ * appear locally: scanned set, cached manifest, queued scans, scan
+ * dead-letter, and the exception ops queue / dead-letter (a previously
+ * raised exception against the placeholder must retry against the real
+ * tag, otherwise the backend would 404 on retry).
+ *
+ * No-op when `oldTag === newTag`. All updates happen in parallel — they
+ * touch independent storage keys.
+ */
+export async function reconcilePlaceholderTag(
+  groupId: string,
+  oldTag: string,
+  newTag: string,
+): Promise<void> {
+  if (!oldTag || !newTag || oldTag === newTag) return;
+
+  const rewriteScans = async (key: string) => {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return;
+    try {
+      const list = JSON.parse(raw) as QueuedScan[];
+      let touched = false;
+      for (const s of list) {
+        if (s.groupId === groupId && s.tagNumber === oldTag) {
+          s.tagNumber = newTag;
+          touched = true;
+        }
+      }
+      if (touched) await AsyncStorage.setItem(key, JSON.stringify(list));
+    } catch {
+      // Skip malformed payloads.
+    }
+  };
+
+  const rewriteOps = async (key: string) => {
+    const raw = await AsyncStorage.getItem(key);
+    if (!raw) return;
+    try {
+      const list = JSON.parse(raw) as QueuedOp[];
+      let touched = false;
+      for (const op of list) {
+        if (
+          op.kind === "exception" &&
+          op.payload.groupId === groupId &&
+          op.payload.tagNumber === oldTag
+        ) {
+          op.payload.tagNumber = newTag;
+          touched = true;
+        }
+      }
+      if (touched) await AsyncStorage.setItem(key, JSON.stringify(list));
+    } catch {
+      // Skip malformed payloads.
+    }
+  };
+
+  await Promise.all([
+    replaceScannedTag(groupId, oldTag, newTag),
+    replaceManifestTag(groupId, oldTag, newTag),
+    rewriteScans(KEYS.queue),
+    rewriteScans(KEYS.deadLetter),
+    rewriteOps(KEYS.opQueueException),
+    rewriteOps(KEYS.opDeadLetterException),
+  ]);
+}
+
 export async function clearAll() {
   const keys = await AsyncStorage.getAllKeys();
   const ours = keys.filter((k) => k.startsWith("sgs:"));
