@@ -20,6 +20,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { BiometricLockGate } from "@/components/BiometricLockGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { OtaUpdateGate } from "@/components/OtaUpdateGate";
 import colors from "@/constants/colors";
 import { AuthProvider } from "@/contexts/AuthContext";
 import { LocaleProvider } from "@/contexts/LocaleContext";
@@ -104,9 +105,11 @@ export default function RootLayout() {
                     <ScanQueueProvider>
                       <View style={{ flex: 1, backgroundColor: colors.sgs.black }}>
                         <StatusBar style="light" backgroundColor={colors.sgs.black} />
-                        <BiometricLockGate>
-                          <RootStack />
-                        </BiometricLockGate>
+                        <OtaUpdateGate>
+                          <BiometricLockGate>
+                            <RootStack />
+                          </BiometricLockGate>
+                        </OtaUpdateGate>
                       </View>
                     </ScanQueueProvider>
                   </SessionProvider>

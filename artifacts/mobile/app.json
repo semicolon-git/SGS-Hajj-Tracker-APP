@@ -9,6 +9,15 @@
     "userInterfaceStyle": "dark",
     "newArchEnabled": true,
     "backgroundColor": "#000000",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "enabled": true,
+      "fallbackToCacheTimeout": 0,
+      "checkAutomatically": "ON_LOAD",
+      "url": "https://u.expo.dev/00000000-0000-0000-0000-000000000000"
+    },
     "splash": {
       "image": "./assets/images/icon.png",
       "resizeMode": "contain",
