@@ -98,7 +98,13 @@ export interface BagGroup {
   id: string;
   flightId: string;
   groupNumber: string;
-  pilgrimCount: number;
+  /**
+   * Number of pilgrims in the group. Optional because the live SGS
+   * `/api/flight-groups` endpoint does not include this field on every
+   * deployment; when absent we hide the count in the UI rather than show
+   * a misleading "0 pilgrims".
+   */
+  pilgrimCount?: number;
   expectedBags: number;
   scannedBags: number;
   assigned?: boolean;
@@ -172,6 +178,9 @@ interface ServerFlightGroup {
   accommodationName?: string;
   terminalCode?: string | null;
   pilgrimCount?: number;
+  pilgrimsCount?: number;
+  paxCount?: number;
+  passengerCount?: number;
   expectedBagCount?: number;
   expectedBags?: number;
   actualBagCount?: number;
@@ -227,7 +236,12 @@ function normalizeGroup(g: ServerFlightGroup): BagGroup {
     id: String(g.id),
     flightId: String(g.flightId),
     groupNumber: label,
-    pilgrimCount: g.pilgrimCount ?? 0,
+    // Live SGS `/api/flight-groups` does not currently surface a pilgrim
+    // count, but older / alternate builds expose it under several names.
+    // Leave it undefined when truly unavailable so the UI can hide the
+    // line instead of showing a misleading "0 pilgrims".
+    pilgrimCount:
+      g.pilgrimCount ?? g.pilgrimsCount ?? g.paxCount ?? g.passengerCount,
     expectedBags: g.expectedBags ?? g.expectedBagCount ?? 0,
     // Server doesn't expose a per-group scanned counter on the list endpoint;
     // scan progress is computed from the manifest once the group is opened.

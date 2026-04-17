@@ -7,8 +7,13 @@ import {
   getCachedAssignments,
   getCachedFlights,
   getCachedGroups,
+  getCachedManifest,
 } from "@/lib/db/storage";
-import type { BagGroup as BagGroupT, Flight as FlightT } from "@/lib/api/sgs";
+import type {
+  BagGroup as BagGroupT,
+  Flight as FlightT,
+  ManifestBag as ManifestBagT,
+} from "@/lib/api/sgs";
 import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
@@ -131,6 +136,54 @@ export default function SessionSetupScreen() {
     enabled: !!selectedFlight,
   });
 
+  // The live SGS `/api/flight-groups` response does not include a pilgrim
+  // count. To still surface a real number on each card we fetch each
+  // group's manifest in parallel and derive the count from the unique
+  // pilgrim names. Manifests are also written through to the offline cache
+  // (and read from it on failure) so this work doubles as a prefetch for
+  // the eventual `startSession` call.
+  const manifestQs = useQueries({
+    queries: (groupsQ.data ?? []).map((g) => ({
+      queryKey: ["manifest", g.id],
+      queryFn: async (): Promise<ManifestBagT[]> => {
+        try {
+          const fresh = await sgsApi.manifest(g.id);
+          await cacheManifest(g.id, fresh);
+          return fresh;
+        } catch (err) {
+          const cached = await getCachedManifest(g.id);
+          if (cached) return cached;
+          throw err;
+        }
+      },
+      enabled: !!selectedFlight,
+      staleTime: 60_000,
+      retry: 0,
+    })),
+  });
+
+  const pilgrimCounts = React.useMemo(() => {
+    const out: Record<string, { count?: number; loading: boolean }> = {};
+    (groupsQ.data ?? []).forEach((g, i) => {
+      const q = manifestQs[i];
+      if (!q || q.isLoading) {
+        out[g.id] = { loading: true };
+        return;
+      }
+      const bags = q.data ?? [];
+      // Some pilgrims have multiple bags, so count distinct names. Bags
+      // missing a name (rare, but possible for no-tag entries) are
+      // ignored to avoid inflating the total.
+      const names = new Set<string>();
+      for (const b of bags) {
+        const n = b.pilgrimName?.trim();
+        if (n) names.add(n);
+      }
+      out[g.id] = { count: names.size, loading: false };
+    });
+    return out;
+  }, [groupsQ.data, manifestQs]);
+
   const startSession = async (group: BagGroup) => {
     if (!selectedFlight) return;
     setBusy(true);
@@ -250,7 +303,11 @@ export default function SessionSetupScreen() {
           ]}
           ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
           renderItem={({ item }) => (
-            <GroupCard group={item} onPress={() => setPendingGroup(item)} />
+            <GroupCard
+              group={item}
+              pilgrims={pilgrimCounts[item.id]}
+              onPress={() => setPendingGroup(item)}
+            />
           )}
           ListEmptyComponent={
             <Text style={styles.empty}>{t("noGroups")}</Text>
@@ -275,8 +332,19 @@ export default function SessionSetupScreen() {
               {t("groupLabel")} {pendingGroup.groupNumber}
             </Text>
             <Text style={styles.confirmSub}>
-              {pendingGroup.pilgrimCount} {t("pilgrims")} ·{" "}
-              {pendingGroup.expectedBags} {t("bags")}
+              {(() => {
+                const p = pilgrimCounts[pendingGroup.id];
+                const fromApi = pendingGroup.pilgrimCount;
+                const count =
+                  typeof fromApi === "number" ? fromApi : p?.count;
+                if (typeof count === "number") {
+                  return `${count} ${t("pilgrims")} · ${pendingGroup.expectedBags} ${t("bags")}`;
+                }
+                if (p?.loading) {
+                  return `… ${t("pilgrims")} · ${pendingGroup.expectedBags} ${t("bags")}`;
+                }
+                return `${pendingGroup.expectedBags} ${t("bags")}`;
+              })()}
             </Text>
             <Text style={styles.confirmSub}>
               {selectedFlight.flightNumber} · {selectedFlight.destination}
@@ -346,11 +414,34 @@ function FlightCard({
   );
 }
 
-function GroupCard({ group, onPress }: { group: BagGroup; onPress: () => void }) {
+function GroupCard({
+  group,
+  pilgrims,
+  onPress,
+}: {
+  group: BagGroup;
+  pilgrims?: { count?: number; loading: boolean };
+  onPress: () => void;
+}) {
   const { t } = useLocale();
   const pct = group.expectedBags
     ? Math.min(100, Math.round((group.scannedBags / group.expectedBags) * 100))
     : 0;
+  // Prefer the count the server explicitly sent; otherwise fall back to
+  // the manifest-derived count. Show a "…" placeholder while the manifest
+  // request is still in flight so the card never lies with "0 pilgrims".
+  const count =
+    typeof group.pilgrimCount === "number"
+      ? group.pilgrimCount
+      : pilgrims?.count;
+  let sub: string;
+  if (typeof count === "number") {
+    sub = `${count} ${t("pilgrims")} · ${group.expectedBags} ${t("bags")}`;
+  } else if (pilgrims?.loading) {
+    sub = `… ${t("pilgrims")} · ${group.expectedBags} ${t("bags")}`;
+  } else {
+    sub = `${group.expectedBags} ${t("bags")}`;
+  }
   return (
     <Pressable
       onPress={onPress}
@@ -362,9 +453,7 @@ function GroupCard({ group, onPress }: { group: BagGroup; onPress: () => void })
         </Text>
         {group.assigned ? <AssignedBadge /> : null}
       </View>
-      <Text style={styles.cardSub}>
-        {group.pilgrimCount} {t("pilgrims")} · {group.expectedBags} {t("bags")}
-      </Text>
+      <Text style={styles.cardSub}>{sub}</Text>
       <View style={styles.progressTrack}>
         <View style={[styles.progressFill, { width: `${pct}%` }]} />
       </View>
