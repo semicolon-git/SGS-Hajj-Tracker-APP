@@ -63,6 +63,7 @@ const en = {
   cameraGrant: "Grant camera permission to scan bag tags on this device.",
   allowCamera: "Allow camera",
   cameraSettings: "Enable camera access in system settings.",
+  openSettings: "Open settings",
   scansFailed: "scan(s) failed to upload.",
   discard: "Discard",
 
@@ -162,6 +163,7 @@ const ar: Dict = {
   cameraGrant: "امنح الكاميرا الإذن لمسح البطاقات.",
   allowCamera: "السماح للكاميرا",
   cameraSettings: "فعّل الكاميرا من إعدادات النظام.",
+  openSettings: "فتح الإعدادات",
   scansFailed: "عملية مسح فشلت في الرفع.",
   discard: "تجاهل",
 

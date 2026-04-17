@@ -14,12 +14,14 @@ import { Field } from "@/components/Field";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import colors from "@/constants/colors";
+import { useAuth } from "@/contexts/AuthContext";
 import { useSession } from "@/contexts/SessionContext";
 import { sgsApi } from "@/lib/api/sgs";
 
 export default function NoTagScreen() {
   const router = useRouter();
   const session = useSession();
+  const auth = useAuth();
   const insets = useSafeAreaInsets();
 
   const [pilgrimName, setPilgrimName] = useState("");
@@ -43,6 +45,10 @@ export default function NoTagScreen() {
         description: description.trim(),
         groupId: session.session!.group.id,
         flightId: session.session!.flight.id,
+        // Forward the agent's station code (e.g. "JED") so the backend
+        // generates a tag like "NOTAG-JED-006" rather than defaulting to
+        // an unknown station segment.
+        stationCode: auth.user?.stationCode,
       });
       Alert.alert(
         "Tag generated",

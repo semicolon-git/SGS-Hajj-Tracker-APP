@@ -12,6 +12,7 @@ import { SGS_BASE_URL, sgsApi, type ScanRequest } from "@/lib/api/sgs";
 import {
   enqueueScan,
   getDeadLetter,
+  getOrCreateDeviceId,
   getQueue,
   moveToDeadLetter,
   setQueue,
@@ -59,10 +60,15 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     const ping = async () => {
       try {
-        const res = await fetch(`${SGS_BASE_URL}/api/healthz`, {
+        // The SGS backend exposes /api/health (not /api/healthz). The old
+        // /api/healthz path was masked by `res.status < 500` accepting the
+        // 404 — which meant we were reporting "online" anytime the API was
+        // reachable, even if the rest of it was actually broken. Hit the
+        // real health endpoint and require a 2xx.
+        const res = await fetch(`${SGS_BASE_URL}/api/health`, {
           method: "GET",
         });
-        if (!cancelled) setOnline(res.ok || res.status < 500);
+        if (!cancelled) setOnline(res.ok);
       } catch {
         if (!cancelled) setOnline(false);
       }
@@ -141,7 +147,16 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
 
   const enqueue = useCallback(
     async (scan: ScanRequest) => {
-      await enqueueScan(scan);
+      // Backstop: every persisted scan MUST carry the stable per-install
+      // deviceId so the backend can dedupe across devices. Callers may
+      // pre-fill it (scan.tsx caches it on mount); if they don't (or if
+      // the cache hadn't resolved before the first scan), hydrate it
+      // here. AsyncStorage round-trip is ~1ms in practice and only
+      // happens on the very first scan after launch.
+      const withDeviceId: ScanRequest = scan.deviceId
+        ? scan
+        : { ...scan, deviceId: await getOrCreateDeviceId() };
+      await enqueueScan(withDeviceId);
       await refresh();
       if (online) syncNow().catch(() => undefined);
     },

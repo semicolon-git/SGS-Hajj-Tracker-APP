@@ -96,6 +96,12 @@ export interface User {
   id: string;
   name: string;
   role: string;
+  /**
+   * Three-letter IATA station code (e.g. "JED") forwarded to write
+   * endpoints like `/api/bags/no-tag` so backend tag generation produces
+   * `NOTAG-JED-NNN` rather than defaulting to an unknown station.
+   */
+  stationCode?: string;
 }
 
 export interface LoginResponse {
@@ -161,6 +167,9 @@ interface ServerLoginBody {
     fullName?: string;
     username?: string;
     role?: string;
+    stationCode?: string;
+    station?: string;
+    stationId?: string;
   };
 }
 
@@ -292,6 +301,15 @@ function normalizeBag(b: ServerBag): ManifestBag {
   };
 }
 
+function normalizeStationCode(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const v = String(raw).trim().toUpperCase();
+  // IATA airport codes are exactly three uppercase letters. Anything else
+  // (empty, numeric ids, "unknown", etc.) is omitted so the backend can
+  // resolve from the JWT instead of failing validation on a bad string.
+  return /^[A-Z]{3}$/.test(v) ? v : undefined;
+}
+
 // RFC 4122 v4 UUID, good enough for correlation IDs. The backend validates
 // scan events with a strict uuid schema so we cannot reuse our local
 // "deviceId:timestamp" style here.
@@ -332,6 +350,7 @@ export const sgsApi = {
         id: String(u.id ?? username),
         name: u.fullName ?? u.name ?? u.username ?? username,
         role: u.role ?? "agent",
+        stationCode: u.stationCode ?? u.station ?? u.stationId,
       },
     };
   },
@@ -352,6 +371,7 @@ export const sgsApi = {
           id: String(u.id ?? ""),
           name: u.fullName ?? u.name ?? u.username ?? "",
           role: u.role ?? "agent",
+          stationCode: u.stationCode ?? u.station ?? u.stationId,
         },
       };
     } catch {
@@ -367,10 +387,22 @@ export const sgsApi = {
   },
 
   flightAssignments: async (): Promise<{ flightIds: string[] }> => {
-    const list = await request<Array<{ flightId: string | number }>>(
-      "/api/flights/assignments-all",
-    );
-    return { flightIds: list.map((a) => String(a.flightId)) };
+    // The live `/api/flights/assignments-all` returns a map keyed by
+    // flightId — typically `Record<flightId, agents[]>` for duty-manager /
+    // supervisor roles. Older builds returned an array of `{ flightId }`
+    // objects. Accept both shapes so the assigned-flight badges render
+    // correctly across roles.
+    const raw = await request<
+      | Array<{ flightId: string | number }>
+      | Record<string, unknown>
+    >("/api/flights/assignments-all");
+    if (Array.isArray(raw)) {
+      return { flightIds: raw.map((a) => String(a.flightId)) };
+    }
+    if (raw && typeof raw === "object") {
+      return { flightIds: Object.keys(raw).map(String) };
+    }
+    return { flightIds: [] };
   },
 
   groups: async (flightId: string): Promise<BagGroup[]> => {
@@ -409,6 +441,10 @@ export const sgsApi = {
           flightId: scan.flightId,
           locationName: scan.source,
           correlationId: uuidv4(),
+          // Stable per-install id so the backend can reliably dedupe
+          // cross-device duplicate scans (two agents scanning the same
+          // bag, or the same device reinstalled). Optional on the wire.
+          deviceId: scan.deviceId,
         }),
       });
       const normalized = res.bag ? normalizeBag(res.bag) : undefined;
@@ -556,7 +592,11 @@ export const sgsApi = {
     }>("/api/bags/no-tag", {
       method: "POST",
       body: JSON.stringify({
-        stationCode: input.stationCode,
+        // Sanitize: backend expects an uppercase 3-letter IATA code.
+        // Trim/uppercase if it looks valid; otherwise omit so the server
+        // can fall back to its own default rather than reject on a bad
+        // value.
+        stationCode: normalizeStationCode(input.stationCode),
         flightId: input.flightId,
         flightGroupId: input.groupId,
         pilgrimName: input.pilgrimName,

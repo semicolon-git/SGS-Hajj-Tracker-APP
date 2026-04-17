@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
   Alert,
@@ -31,8 +31,13 @@ export default function ExceptionScreen() {
   const router = useRouter();
   const session = useSession();
   const insets = useSafeAreaInsets();
+  // Accept ?tag=... from the scan screen so a red flash on a real tag
+  // pre-fills the form. Falls back to empty for direct nav from the
+  // footer.
+  const params = useLocalSearchParams<{ tag?: string | string[] }>();
+  const initialTag = Array.isArray(params.tag) ? params.tag[0] : params.tag;
 
-  const [tag, setTag] = useState("");
+  const [tag, setTag] = useState(initialTag ?? "");
   const [reason, setReason] = useState<string | null>(null);
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);

@@ -26,9 +26,11 @@ import { useIsZebraDevice, useZebraScanner } from "@/hooks/useScanner";
 import { decideScan, normalizeTag } from "@/lib/scanLogic";
 import {
   getCachedManifest,
+  getOrCreateDeviceId,
   getScannedTags,
   markTagScanned,
 } from "@/lib/db/storage";
+import { Linking } from "react-native";
 
 const DEBOUNCE_MS = 1500;
 
@@ -47,6 +49,16 @@ export default function ScanScreen() {
   const [expected, setExpected] = useState(0);
   const [lastTag, setLastTag] = useState<string | null>(null);
   const lastScan = useRef<{ tag: string; at: number } | null>(null);
+  const deviceIdRef = useRef<string | null>(null);
+
+  // Resolve the stable per-install device id once on mount so every scan
+  // can include it on the wire without an awaited storage round-trip in
+  // the hot path.
+  useEffect(() => {
+    getOrCreateDeviceId().then((id) => {
+      deviceIdRef.current = id;
+    });
+  }, []);
 
   useEffect(() => {
     if (!session.session) return;
@@ -101,13 +113,16 @@ export default function ScanScreen() {
         setScannedCount(scannedTags.size + 1);
       }
 
-      // Always queue the scan for server-side reconciliation (server is source of truth)
+      // Always queue the scan for server-side reconciliation (server is
+      // source of truth). `deviceId` lets the backend dedupe across
+      // devices and reinstalls.
       await queue.enqueue({
         tagNumber: tag,
         groupId,
         flightId,
         scannedAt: new Date(now).toISOString(),
         source: isZebra ? "zebra" : "camera",
+        deviceId: deviceIdRef.current ?? undefined,
       });
     },
     [isZebra, queue, session.session, trigger],
@@ -204,7 +219,15 @@ export default function ScanScreen() {
           <FooterButton
             icon="alert-triangle"
             label={t("exception")}
-            onPress={() => router.push("/exception")}
+            onPress={() =>
+              router.push({
+                pathname: "/exception",
+                // Pre-fill the failed tag (red flash) so the agent doesn't
+                // have to re-key it. The exception screen stays editable in
+                // case the agent wants to log against a different tag.
+                params: lastTag ? { tag: lastTag } : undefined,
+              })
+            }
           />
           <FooterButton
             icon="edit-3"
@@ -298,7 +321,17 @@ function CameraPermissionView({
       {canAsk ? (
         <PrimaryButton label={t("allowCamera")} onPress={onRequest} />
       ) : (
-        <Text style={styles.permSub}>{t("cameraSettings")}</Text>
+        // The user previously tapped "Don't ask again" — the in-app prompt
+        // is dead. Linking.openSettings() is the only recovery short of a
+        // reinstall, so surface it as a primary action instead of leaving
+        // the agent stuck on a static hint string.
+        <>
+          <Text style={styles.permSub}>{t("cameraSettings")}</Text>
+          <PrimaryButton
+            label={t("openSettings")}
+            onPress={() => Linking.openSettings()}
+          />
+        </>
       )}
     </View>
   );

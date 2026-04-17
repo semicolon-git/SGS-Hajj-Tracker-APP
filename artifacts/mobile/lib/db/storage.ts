@@ -20,7 +20,54 @@ const KEYS = {
   assignmentsCache: "sgs:assignmentsCache",
   groupsCache: (flightId: string) => `sgs:groupsCache:${flightId}`,
   groupsCacheAt: (flightId: string) => `sgs:groupsCacheAt:${flightId}`,
+  deviceId: "sgs:deviceId",
 };
+
+// ---------- Stable per-install device id ----------
+
+let _deviceIdCache: string | null = null;
+
+/**
+ * Returns a stable UUID for this install, generating one on first call and
+ * persisting it to AsyncStorage. Sent on every scan request so the backend
+ * can dedupe identical scans coming from the same device (e.g. after an
+ * app restart) without conflating them with scans from other devices.
+ *
+ * Falls back to a freshly generated id if storage is unavailable so callers
+ * never see a missing value mid-flow.
+ */
+export async function getOrCreateDeviceId(): Promise<string> {
+  if (_deviceIdCache) return _deviceIdCache;
+  try {
+    const existing = await AsyncStorage.getItem(KEYS.deviceId);
+    if (existing) {
+      _deviceIdCache = existing;
+      return existing;
+    }
+  } catch {
+    // fall through to generation
+  }
+  const fresh = generateUuidV4();
+  try {
+    await AsyncStorage.setItem(KEYS.deviceId, fresh);
+  } catch {
+    // best-effort persistence; in-memory cache still applies for this session
+  }
+  _deviceIdCache = fresh;
+  return fresh;
+}
+
+function generateUuidV4(): string {
+  const hex = "0123456789abcdef";
+  let out = "";
+  for (let i = 0; i < 36; i++) {
+    if (i === 8 || i === 13 || i === 18 || i === 23) out += "-";
+    else if (i === 14) out += "4";
+    else if (i === 19) out += hex[(Math.random() * 4) | 0 | 8];
+    else out += hex[(Math.random() * 16) | 0];
+  }
+  return out;
+}
 
 // ---------- Flights / groups offline cache ----------
 

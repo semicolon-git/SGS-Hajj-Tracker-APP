@@ -90,7 +90,16 @@ export function normalizeTag(raw: string): string {
 
 export function isSgsHajjTag(tag: string): boolean {
   if (!tag) return false;
-  // SGS prefix + 10-15 alphanumeric body. Tolerant to allow operator tools
-  // to evolve the body length without immediately invalidating the app.
-  return /^SGS[A-Z0-9]{8,15}$/i.test(tag);
+  // The SGS backend issues several tag formats today:
+  //   - "SGS-JED-260512-006"      (regular bag tag, hyphenated)
+  //   - "SGSJED260512006"         (legacy unhyphenated)
+  //   - "NOTAG-JED-006"           (no-tag-bag generated tag)
+  //   - "SGS-CARGO-JED-260512-001" (cargo variant)
+  // Rather than enforce every shape on the client (and reject legitimate
+  // tags the server happily accepts), we use a permissive shape check —
+  // alphanumeric + hyphen, length 5-30 — and let the server be the
+  // authoritative validator. Anything outside this window is almost
+  // certainly a barcode from a different domain (boarding pass, ID, etc.)
+  // and shouldn't reach the scan pipeline.
+  return /^[A-Z0-9-]{5,30}$/i.test(tag);
 }

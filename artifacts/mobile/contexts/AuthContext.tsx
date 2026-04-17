@@ -19,7 +19,13 @@ const LAST_SYNC_KEY = "sgs.lastSyncAt";
 // HTTP-only refresh cookie instead.
 const LEGACY_REFRESH_KEY = "sgs.refreshToken";
 
-type User = { id: string; name: string; role: string };
+type User = {
+  id: string;
+  name: string;
+  role: string;
+  /** Three-letter IATA station code (e.g. "JED") parsed from the JWT. */
+  stationCode?: string;
+};
 
 type AuthContextValue = {
   ready: boolean;
