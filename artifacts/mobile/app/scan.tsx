@@ -48,6 +48,11 @@ export default function ScanScreen() {
   const [scannedCount, setScannedCount] = useState(0);
   const [expected, setExpected] = useState(0);
   const [lastTag, setLastTag] = useState<string | null>(null);
+  // Tracks the last tag that produced a red flash (unknown / wrong-group /
+  // duplicate). Used as the prefill source when the agent taps "Exception"
+  // so the form is seeded with the tag that actually needs an exception
+  // raised against it, not just the most recent successful scan.
+  const [lastFailedTag, setLastFailedTag] = useState<string | null>(null);
   const lastScan = useRef<{ tag: string; at: number } | null>(null);
   const deviceIdRef = useRef<string | null>(null);
 
@@ -107,6 +112,7 @@ export default function ScanScreen() {
         decision.hapticKey,
       );
       setLastTag(tag);
+      if (decision.flash === "red") setLastFailedTag(tag);
 
       if (decision.flash === "green") {
         await markTagScanned(groupId, tag);
@@ -223,9 +229,11 @@ export default function ScanScreen() {
               router.push({
                 pathname: "/exception",
                 // Pre-fill the failed tag (red flash) so the agent doesn't
-                // have to re-key it. The exception screen stays editable in
-                // case the agent wants to log against a different tag.
-                params: lastTag ? { tag: lastTag } : undefined,
+                // have to re-key it. Only red-flash tags qualify — green
+                // matches are already in the system and shouldn't seed an
+                // exception form. The screen stays editable for any
+                // override case.
+                params: lastFailedTag ? { tag: lastFailedTag } : undefined,
               })
             }
           />
