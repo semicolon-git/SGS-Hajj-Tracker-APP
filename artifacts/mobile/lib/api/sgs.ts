@@ -13,14 +13,31 @@
  *   - All authed requests send `Authorization: Bearer <token>`.
  */
 
+import Constants from "expo-constants";
+
 const DEFAULT_BASE = "https://sgshajj.semicolon.sa";
 
 // IMPORTANT: do NOT fall back to EXPO_PUBLIC_DOMAIN here. That env var is set
 // by the build script to the Replit hosting domain so Metro can serve the JS
 // bundle — it is NOT the API host. Conflating the two routed every authed
 // call to a server with no /api/* mounted, producing 404 on login.
+//
+// Resolution order:
+//   1. EXPO_PUBLIC_SGS_API_URL (process.env, inlined at bundle time when
+//      provided via eas.json build profile env or shell env at metro start).
+//   2. expo.extra.eas.env.EXPO_PUBLIC_SGS_API_URL from app.json (read via
+//      expo-constants), which is the value pinned into every published
+//      build as a deployment-policy escape hatch.
+//   3. Hard-coded production backend.
+const extra = (Constants.expoConfig?.extra ?? {}) as Record<string, unknown>;
+const easEnv = ((extra.eas as Record<string, unknown> | undefined)?.env ??
+  {}) as Record<string, string | undefined>;
+
 export const SGS_BASE_URL =
-  process.env.EXPO_PUBLIC_SGS_API_URL || DEFAULT_BASE;
+  process.env.EXPO_PUBLIC_SGS_API_URL ||
+  easEnv.EXPO_PUBLIC_SGS_API_URL ||
+  (extra.EXPO_PUBLIC_SGS_API_URL as string | undefined) ||
+  DEFAULT_BASE;
 
 let authToken: string | null = null;
 export function setAuthToken(token: string | null) {

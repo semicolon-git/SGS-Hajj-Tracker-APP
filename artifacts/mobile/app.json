@@ -58,7 +58,11 @@
       "reactCompiler": true
     },
     "extra": {
-      "EXPO_PUBLIC_SGS_API_URL": "https://sgshajj.semicolon.sa"
+      "eas": {
+        "env": {
+          "EXPO_PUBLIC_SGS_API_URL": "https://sgshajj.semicolon.sa"
+        }
+      }
     }
   }
 }
