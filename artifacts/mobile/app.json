@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "SGS BagScan",
+    "slug": "mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "sgsbagscan",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "backgroundColor": "#000000",
+    "splash": {
+      "image": "./assets/images/icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "sa.semicolon.sgs.bagscan",
+      "infoPlist": {
+        "NSCameraUsageDescription": "SGS BagScan uses the camera to scan luggage tag barcodes."
+      }
+    },
+    "android": {
+      "package": "sa.semicolon.sgs.bagscan",
+      "permissions": ["CAMERA"]
+    },
+    "web": {
+      "favicon": "./assets/images/icon.png"
+    },
+    "plugins": [
+      [
+        "expo-router",
+        {
+          "origin": "https://replit.com/"
+        }
+      ],
+      "expo-font",
+      "expo-web-browser",
+      "expo-secure-store",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SGS BagScan uses the camera to scan luggage tag barcodes."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}
