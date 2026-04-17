@@ -293,9 +293,16 @@ export default function ScanScreen() {
             onPress={() => router.push("/shift-summary")}
           />
         </View>
-        <Text style={styles.footerAgent}>
-          {auth.user?.name} · {isZebra ? t("zebraMode") : t("cameraMode")}
-        </Text>
+        <Pressable
+          onPress={() => router.push("/settings")}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Open settings and version info"
+        >
+          <Text style={styles.footerAgent}>
+            {auth.user?.name} · {isZebra ? t("zebraMode") : t("cameraMode")}
+          </Text>
+        </Pressable>
       </View>
     </View>
   );
