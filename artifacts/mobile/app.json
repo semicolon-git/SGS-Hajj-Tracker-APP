@@ -69,7 +69,7 @@
     "extra": {
       "eas": {
         "env": {
-          "EXPO_PUBLIC_SGS_API_URL": "https://sgshajj.semicolon.sa"
+          "EXPO_PUBLIC_SGS_API_URL": "https://api-bagtracker-prod.saudiags.com"
         }
       }
     }

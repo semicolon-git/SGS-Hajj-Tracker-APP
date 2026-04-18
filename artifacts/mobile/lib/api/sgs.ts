@@ -1,9 +1,9 @@
 /**
  * Pure API client for the SGS Hajj Luggage platform.
  *
- * The backend lives at sgshajj.semicolon.sa. Endpoints and payload shapes were
- * validated against the live web client bundle so this module mirrors the same
- * contract used by the official ops console.
+ * The backend lives at api-bagtracker-prod.saudiags.com. Endpoints and payload
+ * shapes were validated against the live web client bundle so this module
+ * mirrors the same contract used by the official ops console.
  *
  * Auth model:
  *   - POST /api/auth/login returns a JWT in the JSON body and ALSO sets an
@@ -15,7 +15,7 @@
 
 import Constants from "expo-constants";
 
-const DEFAULT_BASE = "https://sgshajj.semicolon.sa";
+const DEFAULT_BASE = "https://api-bagtracker-prod.saudiags.com";
 
 // IMPORTANT: do NOT fall back to EXPO_PUBLIC_DOMAIN here. That env var is set
 // by the build script to the Replit hosting domain so Metro can serve the JS
