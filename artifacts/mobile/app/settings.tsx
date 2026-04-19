@@ -21,7 +21,6 @@ import colors from "@/constants/colors";
 import { useLocale } from "@/contexts/LocaleContext";
 import { useOtaUpdater, type OtaCheckPhase } from "@/hooks/useOtaUpdater";
 import {
-  isDataWedgeAvailable,
   reconfigureZebraProfile,
   useIsZebraDevice,
 } from "@/hooks/useScanner";
@@ -48,11 +47,11 @@ export default function SettingsScreen() {
   const [rawScanOn, setRawScanOn] = useState(false);
 
   const isZebra = useIsZebraDevice();
-  // Renders the Reconfigure button only when both the JS-side detector
-  // says we're on Zebra hardware AND the native bridge confirms the
-  // DataWedge package is actually installed. Avoids showing a button
-  // that can't possibly succeed.
-  const [dataWedgePresent, setDataWedgePresent] = useState(false);
+  // The reconfigure button is rendered for any Zebra device. The
+  // missing-DataWedge case is reported by reconfigureZebraProfile()
+  // itself (result.dataWedgeMissing → t("reconfigureNoDataWedge")) so
+  // the operator always gets explicit feedback rather than a silently
+  // hidden control.
   const [reconfigState, setReconfigState] = useState<{
     phase: "idle" | "running" | "done" | "error";
     message?: string;
@@ -63,16 +62,6 @@ export default function SettingsScreen() {
     return () => {
       if (copyTimer.current) clearTimeout(copyTimer.current);
       if (reconfigTimer.current) clearTimeout(reconfigTimer.current);
-    };
-  }, []);
-
-  useEffect(() => {
-    let alive = true;
-    isDataWedgeAvailable().then((present) => {
-      if (alive) setDataWedgePresent(present);
-    });
-    return () => {
-      alive = false;
     };
   }, []);
 
