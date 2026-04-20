@@ -47,6 +47,15 @@ export function getAuthToken() {
   return authToken;
 }
 
+// Fired when a non-auth endpoint returns 401/403 with a bearer token set —
+// i.e. the stored JWT is invalid/expired. AuthContext wires this to its
+// signOut flow so the agent gets bounced to /login instead of seeing the
+// same error on every screen refresh.
+let onAuthFailure: (() => void) | null = null;
+export function setOnAuthFailure(handler: (() => void) | null) {
+  onAuthFailure = handler;
+}
+
 export class ApiError extends Error {
   status: number;
   body: unknown;
@@ -59,6 +68,56 @@ export class ApiError extends Error {
 
 type RequestOpts = RequestInit & { credentials?: RequestCredentials };
 
+// ---------- Request interceptor / logger ----------
+
+const __DEV__ = process.env.NODE_ENV !== "production";
+
+function logRequest(
+  method: string,
+  url: string,
+  headers: Record<string, string>,
+  body?: string,
+) {
+  if (!__DEV__) return;
+  const safeHeaders = { ...headers };
+  if (safeHeaders["Authorization"]) {
+    safeHeaders["Authorization"] = safeHeaders["Authorization"].slice(0, 20) + "…";
+  }
+  console.log(
+    `\n[SGS ▶] ${method} ${url}\n` +
+    `  Headers: ${JSON.stringify(safeHeaders, null, 2)}\n` +
+    (body ? `  Body:    ${body}` : ""),
+  );
+}
+
+function logResponse(
+  method: string,
+  url: string,
+  status: number,
+  durationMs: number,
+  body: unknown,
+) {
+  if (!__DEV__) return;
+  const bodyStr = JSON.stringify(body);
+  console.log(
+    `\n[SGS ◀] ${status} ${method} ${url} (${durationMs}ms)\n` +
+    `  Body: ${bodyStr}`,
+  );
+}
+
+function logError(
+  method: string,
+  url: string,
+  durationMs: number,
+  err: unknown,
+) {
+  if (!__DEV__) return;
+  console.warn(
+    `\n[SGS ✗] ${method} ${url} (${durationMs}ms)\n` +
+    `  Error: ${err instanceof Error ? err.message : String(err)}`,
+  );
+}
+
 async function request<T>(path: string, init: RequestOpts = {}): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -67,11 +126,23 @@ async function request<T>(path: string, init: RequestOpts = {}): Promise<T> {
   };
   if (authToken) headers["Authorization"] = `Bearer ${authToken}`;
 
-  const res = await fetch(`${SGS_BASE_URL}${path}`, {
-    credentials: "include",
-    ...init,
-    headers,
-  });
+  const fullUrl = `${SGS_BASE_URL}${path}`;
+  const method = (init.method ?? "GET").toUpperCase();
+  const t0 = Date.now();
+
+  logRequest(method, fullUrl, headers, init.body as string | undefined);
+
+  let res: Response;
+  try {
+    res = await fetch(fullUrl, {
+      ...init,
+      headers,
+    });
+  } catch (fetchErr) {
+    logError(method, fullUrl, Date.now() - t0, fetchErr);
+    throw fetchErr;
+  }
+
   const text = await res.text();
   let body: unknown = null;
   if (text) {
@@ -81,10 +152,28 @@ async function request<T>(path: string, init: RequestOpts = {}): Promise<T> {
       body = text;
     }
   }
+
+  logResponse(method, fullUrl, res.status, Date.now() - t0, body);
+
   if (!res.ok) {
     const msg =
       (body as { message?: string })?.message ||
       `Request failed (${res.status})`;
+    // Auth endpoints report 401 as part of their normal contract (wrong
+    // password, missing refresh cookie). Skip the global handler for those
+    // so a failed login doesn't recursively sign the user out.
+    const isAuthEndpoint =
+      path === "/api/auth/login" ||
+      path === "/api/auth/refresh" ||
+      path === "/api/auth/logout";
+    if (
+      (res.status === 401 || res.status === 403) &&
+      authToken &&
+      !isAuthEndpoint
+    ) {
+      authToken = null;
+      onAuthFailure?.();
+    }
     throw new ApiError(msg, res.status, body);
   }
   return body as T;
@@ -194,6 +283,7 @@ interface ServerFlight {
   arrivalAirport?: string;
   departureAirport?: string;
   originAirport?: string;
+  flightDirection?: "ARRIVAL" | "DEPARTURE" | string;
   scheduledTime?: string;
   departureTime?: string;
   scheduledDeparture?: string;
@@ -289,9 +379,12 @@ function normalizeGroup(g: ServerFlightGroup): BagGroup {
     pilgrimCount:
       g.pilgrimCount ?? g.pilgrimsCount ?? g.paxCount ?? g.passengerCount,
     expectedBags: g.expectedBags ?? g.expectedBagCount ?? 0,
-    // Server doesn't expose a per-group scanned counter on the list endpoint;
-    // scan progress is computed from the manifest once the group is opened.
-    scannedBags: g.scannedBags ?? g.scannedBagCount ?? 0,
+    // Live SGS returns the running loaded-bags total as `actualBagCount`.
+    // Older builds used `scannedBagCount` / `scannedBags`, so we accept any
+    // of them before falling back to 0 (the local manifest then corrects
+    // the number as the agent scans).
+    scannedBags:
+      g.scannedBags ?? g.scannedBagCount ?? g.actualBagCount ?? 0,
     assigned: g.assigned,
   };
 }
@@ -406,7 +499,6 @@ export const sgsApi = {
     try {
       const body = await request<ServerLoginBody>("/api/auth/refresh", {
         method: "POST",
-        credentials: "include",
       });
       if (!body.token) return null;
       const u = body.user ?? {};

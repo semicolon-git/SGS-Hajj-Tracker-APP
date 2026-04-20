@@ -10,6 +10,7 @@ import {
   DMSans_700Bold,
 } from "@expo-google-fonts/dm-sans";
 import * as Font from "expo-font";
+import * as Updates from "expo-updates";
 import React, {
   createContext,
   useCallback,
@@ -18,12 +19,13 @@ import React, {
   useMemo,
   useState,
 } from "react";
-import { I18nManager, Platform } from "react-native";
+import { DevSettings, I18nManager, Platform } from "react-native";
 
 import { FONTS } from "@/constants/branding";
 import { translate, type Locale, type StringKey } from "@/lib/i18n";
 
 const LOCALE_KEY = "sgs.locale";
+const SKIP_BIOMETRIC_KEY = "sgs.skipNextBiometric";
 
 type LocaleContextValue = {
   ready: boolean;
@@ -32,24 +34,58 @@ type LocaleContextValue = {
   t: (key: StringKey) => string;
   setLocale: (l: Locale) => Promise<void>;
   fontFamily: Record<keyof typeof FONTS, string>;
+  fontEpoch: number;
 };
 
 const LocaleContext = createContext<LocaleContextValue | null>(null);
 
 /**
  * On native we toggle RTL via `I18nManager.forceRTL` so the entire layout
- * mirrors. On web we cannot reload the bundle, so we just flip writingDirection
- * implicitly via I18nManager — text alignment still respects RTL.
+ * mirrors. Returns true iff the native direction flag was actually flipped —
+ * callers must then reload the JS bundle, because RN only mirrors layout on
+ * startup. Web can't reload the bundle; text alignment still follows the flag.
  */
-async function applyRTL(locale: Locale) {
+async function applyRTL(locale: Locale): Promise<boolean> {
   const wantRTL = locale === "ar";
-  if (I18nManager.isRTL !== wantRTL) {
-    try {
-      I18nManager.allowRTL(wantRTL);
-      I18nManager.forceRTL(wantRTL);
-    } catch {
-      // ignore
+  if (I18nManager.isRTL === wantRTL) return false;
+  try {
+    I18nManager.allowRTL(wantRTL);
+    I18nManager.forceRTL(wantRTL);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function reloadForRTL() {
+  if (Platform.OS === "web") return;
+  // Tell BiometricLockGate to let the next cold-start through without a
+  // prompt — the reload was our doing, not a real app relaunch.
+  try {
+    await AsyncStorage.setItem(SKIP_BIOMETRIC_KEY, "1");
+  } catch {
+    // best-effort; a stray biometric prompt is survivable
+  }
+  // Production / EAS path: fully restarts the native context so the new RTL
+  // flag is picked up. In Expo Go / dev clients this is a stub and will throw.
+  try {
+    await Updates.reloadAsync();
+    return;
+  } catch (err) {
+    if (!__DEV__) {
+      console.warn("[locale] Updates.reloadAsync failed:", err);
     }
+  }
+  // Dev fallback: reload the JS bundle. On Android this re-creates the RN
+  // bridge and picks up the new I18nManager flag. On iOS the native RTL flag
+  // is only read at process launch, so a full force-quit is still required.
+  try {
+    DevSettings.reload();
+  } catch (err) {
+    console.warn(
+      "[locale] Could not reload automatically — fully quit and reopen the app to apply the RTL change.",
+      err,
+    );
   }
 }
 
@@ -91,8 +127,16 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
         const raw = await AsyncStorage.getItem(LOCALE_KEY);
         const next: Locale = raw === "ar" ? "ar" : "en";
         setLocaleState(next);
-        await applyRTL(next);
+        const flipped = await applyRTL(next);
         await applyFontFamily(next);
+        // If the native RTL flag drifted from the stored locale (e.g. first
+        // launch on an AR device, reinstall, or a prior session that forced
+        // RTL without reloading), restart the bundle so layout actually
+        // mirrors instead of silently flipping direction mid-session.
+        if (flipped) {
+          await reloadForRTL();
+          return;
+        }
       } finally {
         setReady(true);
       }
@@ -100,9 +144,15 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const setLocale = useCallback(async (next: Locale) => {
-    setLocaleState(next);
     await AsyncStorage.setItem(LOCALE_KEY, next);
-    await applyRTL(next);
+    const flipped = await applyRTL(next);
+    if (flipped) {
+      // Layout mirroring only takes effect after a bundle reload. Persist
+      // first, then reload so the app comes back up in the correct direction.
+      await reloadForRTL();
+      return;
+    }
+    setLocaleState(next);
     await applyFontFamily(next);
     // Bump the epoch so children remount and re-read the newly registered
     // font glyphs (RN won't re-render mounted text otherwise).
@@ -135,19 +185,13 @@ export function LocaleProvider({ children }: { children: React.ReactNode }) {
       t,
       setLocale,
       fontFamily,
+      fontEpoch,
     }),
-    [ready, locale, t, setLocale, fontFamily],
+    [ready, locale, t, setLocale, fontFamily, fontEpoch],
   );
 
-  // Force a full subtree remount on locale / font change so I18nManager and
-  // the remapped font registry take effect immediately on every mounted
-  // Text / View without requiring a full app reload.
-  const wrapperKey = Platform.OS === "web" ? locale : `${locale}-${fontEpoch}`;
-
   return (
-    <LocaleContext.Provider value={value}>
-      <React.Fragment key={wrapperKey}>{children}</React.Fragment>
-    </LocaleContext.Provider>
+    <LocaleContext.Provider value={value}>{children}</LocaleContext.Provider>
   );
 }
 

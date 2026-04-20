@@ -11,10 +11,15 @@
  */
 
 import * as Device from "expo-device";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { DeviceEventEmitter, NativeModules, Platform } from "react-native";
 
 import { normalizeTag } from "@/lib/scanLogic";
+import {
+  getScannerMode,
+  setScannerMode as persistScannerMode,
+  type ScannerMode,
+} from "@/lib/db/storage";
 
 const ZEBRA_MANUFACTURERS = ["zebra", "zebra technologies"];
 const ZEBRA_MODELS = ["TC57HO", "TC72", "TC77", "MC93"];
@@ -38,6 +43,59 @@ export function useIsZebraDevice(): boolean {
     }
   }, []);
   return isZebra;
+}
+
+export interface ScannerModeState {
+  /** User-selected preference from Settings — auto by default. */
+  mode: ScannerMode;
+  /**
+   * Source the app should actually use right now. In auto mode this folds
+   * the device detection in (Zebra hardware → "zebra"; else → "camera").
+   * In an explicit mode it equals `mode`. Callers should branch on this,
+   * not on `useIsZebraDevice` directly.
+   */
+  effective: "zebra" | "camera";
+  /** Raw device-detection result, exposed so Settings can show what was detected. */
+  detected: boolean;
+  /** True once the persisted preference has been hydrated from AsyncStorage. */
+  ready: boolean;
+  setMode: (mode: ScannerMode) => void;
+}
+
+/**
+ * Single source of truth for which scanner the UI should drive.
+ *
+ * The persisted preference is hydrated optimistically: we render with
+ * `mode="auto"` immediately and overwrite once AsyncStorage resolves.
+ * That avoids a UI flash on the scan screen — `effective` lands on the
+ * right value within the same frame the device-detection effect resolves.
+ */
+export function useScannerMode(): ScannerModeState {
+  const detected = useIsZebraDevice();
+  const [mode, setModeState] = useState<ScannerMode>("auto");
+  const [ready, setReady] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    getScannerMode().then((stored) => {
+      if (!alive) return;
+      setModeState(stored);
+      setReady(true);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const setMode = useCallback((next: ScannerMode) => {
+    setModeState(next);
+    void persistScannerMode(next);
+  }, []);
+
+  const effective: "zebra" | "camera" =
+    mode === "auto" ? (detected ? "zebra" : "camera") : mode;
+
+  return { mode, effective, detected, ready, setMode };
 }
 
 /**

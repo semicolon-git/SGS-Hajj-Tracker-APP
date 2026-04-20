@@ -9,7 +9,7 @@ import React, {
 } from "react";
 import { AppState, Platform } from "react-native";
 
-import { sgsApi, setAuthToken } from "@/lib/api/sgs";
+import { sgsApi, setAuthToken, setOnAuthFailure } from "@/lib/api/sgs";
 
 const TOKEN_KEY = "sgs.authToken";
 const USER_KEY = "sgs.authUser";
@@ -161,6 +161,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       secureDel(USER_KEY),
       secureDel(LEGACY_REFRESH_KEY),
     ]);
+  }, []);
+
+  // When a stored JWT expires and the backend rejects a non-auth request,
+  // drop the token here so the route guard redirects the agent to /login
+  // on the next render cycle. Without this hook the stale token stays in
+  // state and every subsequent fetch spams another 401.
+  useEffect(() => {
+    setOnAuthFailure(() => {
+      setToken(null);
+      setUser(null);
+      secureDel(TOKEN_KEY).catch(() => undefined);
+      secureDel(USER_KEY).catch(() => undefined);
+    });
+    return () => setOnAuthFailure(null);
   }, []);
 
   const value = useMemo(

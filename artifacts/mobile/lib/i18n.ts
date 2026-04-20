@@ -143,6 +143,19 @@ const en = {
   applyUpdateNow: "Apply update now",
   applying: "Applying…",
 
+  // Settings · Scanner mode
+  scannerSection: "Scanner",
+  scannerSectionBody:
+    "Choose which scanner the app drives. Auto picks based on the device — switch only if you need to override.",
+  scannerMode: "Scanner mode",
+  scannerModeAuto: "Auto",
+  scannerModeZebra: "Trigger",
+  scannerModeCamera: "Camera",
+  scannerDetected: "Detected:",
+  scannerDetectedZebra: "Zebra hardware",
+  scannerDetectedConsumer: "Consumer device",
+  scannerOverride: "Override active — using your selection instead of auto-detect.",
+
   // Settings · Diagnostics
   diagnostics: "Diagnostics",
   showRawScan: "Show raw scan",
@@ -164,6 +177,8 @@ const en = {
   noScansYetBody:
     "If pulling the trigger does nothing, open Settings → Diagnostics and tap Reconfigure scanner.",
   openSettingsAction: "Open Settings",
+
+  notInManifestHint: "This bag is not registered in this group.\nUse Exception if the bag is physically present.",
 };
 
 const ar: Dict = {
@@ -291,6 +306,18 @@ const ar: Dict = {
   applyUpdateNow: "تطبيق التحديث الآن",
   applying: "جارٍ التطبيق…",
 
+  scannerSection: "الماسح",
+  scannerSectionBody:
+    "اختر الماسح الذي يستخدمه التطبيق. \"تلقائي\" يختار حسب الجهاز — غيّره فقط إذا أردت تجاوز الاكتشاف.",
+  scannerMode: "وضع الماسح",
+  scannerModeAuto: "تلقائي",
+  scannerModeZebra: "زر Zebra",
+  scannerModeCamera: "الكاميرا",
+  scannerDetected: "المكتشَف:",
+  scannerDetectedZebra: "جهاز Zebra",
+  scannerDetectedConsumer: "جهاز عادي",
+  scannerOverride: "تجاوز يدوي مفعّل — يُستخدم اختيارك بدلاً من الاكتشاف التلقائي.",
+
   diagnostics: "التشخيص",
   showRawScan: "إظهار المسح الخام",
   showRawScanBody:
@@ -310,6 +337,8 @@ const ar: Dict = {
   noScansYetBody:
     "إذا لم يحدث شيء عند ضغط الزر، افتح الإعدادات ← التشخيص واضغط إعادة ضبط الماسح.",
   openSettingsAction: "فتح الإعدادات",
+
+  notInManifestHint: "هذه الحقيبة غير مسجلة في هذه المجموعة.\nاستخدم الاستثناء إذا كانت الحقيبة موجودة فعلياً.",
 };
 
 const dictionaries: Record<Locale, Dict> = { en, ar };

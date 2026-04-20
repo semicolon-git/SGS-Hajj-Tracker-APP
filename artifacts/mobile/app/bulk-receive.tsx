@@ -20,7 +20,7 @@ import colors from "@/constants/colors";
 import { useLocale } from "@/contexts/LocaleContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
 import { useSession } from "@/contexts/SessionContext";
-import { useIsZebraDevice, useZebraScanner } from "@/hooks/useScanner";
+import { useScannerMode, useZebraScanner } from "@/hooks/useScanner";
 import { decideScan, isSgsHajjTag, normalizeTag } from "@/lib/scanLogic";
 import {
   getCachedManifest,
@@ -37,7 +37,12 @@ export default function BulkReceiveScreen() {
   const router = useRouter();
   const session = useSession();
   const queue = useScanQueue();
-  const isZebra = useIsZebraDevice();
+  const { effective: scannerSource } = useScannerMode();
+  // `isZebra` here gates the source label on the wire only — when the
+  // user has forced camera mode on a Zebra device the bulk-receive
+  // screen still falls back to keyboard input (no camera UI here), so
+  // the source stays "manual" rather than flipping to "camera".
+  const isZebra = scannerSource === "zebra";
   const insets = useSafeAreaInsets();
   const { t } = useLocale();
 

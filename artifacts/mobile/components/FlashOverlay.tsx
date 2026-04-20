@@ -3,6 +3,7 @@ import { Animated, StyleSheet, Text, View } from "react-native";
 
 import colors from "@/constants/colors";
 import { FONTS, type FlashColor } from "@/constants/branding";
+import { useLocale } from "@/contexts/LocaleContext";
 
 const COLOR_MAP: Record<FlashColor, string> = {
   green: colors.sgs.flashGreen,
@@ -16,12 +17,15 @@ export function FlashOverlay({
   color,
   title,
   subtitle,
+  hint,
 }: {
   color: FlashColor;
   title: string;
   subtitle?: string;
+  hint?: string;
 }) {
   const opacity = useRef(new Animated.Value(0)).current;
+  const { isRTL } = useLocale();
   const isBorder = color === "amber";
 
   useEffect(() => {
@@ -50,6 +54,9 @@ export function FlashOverlay({
             {subtitle ? (
               <Text style={[styles.subtitle, { color: fg }]}>{subtitle}</Text>
             ) : null}
+            {hint ? (
+              <Text style={[styles.hint, { color: fg }, isRTL && { writingDirection: "rtl" }]}>{hint}</Text>
+            ) : null}
           </View>
         </View>
       </Animated.View>
@@ -65,6 +72,9 @@ export function FlashOverlay({
         <Text style={[styles.title, { color: fg }]}>{title}</Text>
         {subtitle ? (
           <Text style={[styles.subtitle, { color: fg }]}>{subtitle}</Text>
+        ) : null}
+        {hint ? (
+          <Text style={[styles.hint, { color: fg }, isRTL && { writingDirection: "rtl" }]}>{hint}</Text>
         ) : null}
       </View>
     </Animated.View>
@@ -95,5 +105,12 @@ const styles = StyleSheet.create({
     fontSize: 22,
     marginTop: 8,
     textAlign: "center",
+  },
+  hint: {
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 15,
+    marginTop: 16,
+    textAlign: "center",
+    opacity: 0.8,
   },
 });

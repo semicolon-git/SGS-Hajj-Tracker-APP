@@ -12,10 +12,16 @@
       "distribution": "internal",
       "android": {
         "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_SGS_API_URL": "https://api-bagtracker-prod.saudiags.com"
       }
     },
     "production": {
-      "autoIncrement": true
+      "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SGS_API_URL": "https://api-bagtracker-prod.saudiags.com"
+      }
     }
   },
   "submit": {
