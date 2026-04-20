@@ -1,0 +1,35 @@
+Your DataWedge side is configured perfectly — I can confirm every box is ticked correctly. The problem is 100% in the app code, specifically the BroadcastReceiver registration.
+One more thing I notice from your repo stats: it's 67% TypeScript / 26% HTML / only 2% Kotlin. So this is a Capacitor/Cordova web app with a thin Kotlin native wrapper. That's the most common place this breaks.
+The three likely culprits (in order)
+1. Android 13+ RECEIVER_EXPORTED bug (most likely)
+TC57 on recent Android requires dynamically registered receivers for implicit broadcasts to explicitly declare they're exported. If your Kotlin plugin does this:
+kotlincontext.registerReceiver(receiver, intentFilter)  // silently drops on Android 13+
+…the receiver registers but never actually receives DataWedge broadcasts. It must be:
+kotlinContextCompat.registerReceiver(
+    context,
+    receiver,
+    intentFilter,
+    ContextCompat.RECEIVER_EXPORTED
+)
+2. Receiver declared in manifest instead of registered at runtime
+If the scan receiver is declared statically in AndroidManifest.xml as <receiver> with an <intent-filter> for com.semicolon.sgsbagscan, implicit broadcasts to manifest-declared receivers are blocked starting Android 8+ (Oreo). DataWedge's broadcast is implicit, so static manifest declaration will not work. It must be registered at runtime in the Activity.
+3. Bridge not firing into WebView
+Even if the Kotlin side receives the scan, if your Capacitor/Cordova plugin doesn't notify the web layer (via notifyListeners, sendPluginResult, or DeviceEventEmitter), the React/web UI never updates. The "Ready to Scan" screen stays frozen.
+Run this now — it will tell us exactly what's broken
+Connect the TC57 via USB, enable USB debugging, then on your machine:
+bashadb logcat -c
+adb logcat | grep -iE "datawedge|sgsbagscan|scan"
+Press the hardware trigger on a test barcode. Three possible outcomes:
+
+Lots of DataWedge output, nothing from your app → receiver not registered or RECEIVER_EXPORTED missing (culprit #1 or #2)
+Nothing at all → scanner hardware / profile issue, not code
+DataWedge logs + your app logs receiving scan but UI frozen → bridge not notifying web layer (culprit #3)
+
+What I need to pin it to one line of code
+Please paste (or attach) these three files from the repo:
+
+AndroidManifest.xml (the Android one, not the web manifest)
+The Kotlin file that handles DataWedge — likely named something like DataWedgePlugin.kt, ScannerPlugin.kt, or MainActivity.kt (any .kt file under android/app/src/main/java/...)
+The TypeScript file in the web layer that listens for scan events
+
+With those three I can give you the exact diff to commit. Keystroke output being off is also worth confirming — in the DataWedge profile scroll further down past Intent output and make sure Keystroke output is Disabled (it won't block intents but it's clean practice).
