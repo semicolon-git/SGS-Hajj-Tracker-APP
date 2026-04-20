@@ -10,6 +10,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import android.widget.Toast
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
@@ -170,6 +171,51 @@ class ZebraScanModule(reactContext: ReactApplicationContext) :
     reactApplicationContext
       .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
       .emit("ZebraScan", payload)
+    val toastText = if (symbology?.uppercase()?.contains("PDF417") == true)
+      buildBtpToastText(data)
+    else
+      "Scanned [${symbology ?: "unknown"}]\n$data"
+    Toast.makeText(
+      reactApplicationContext.applicationContext,
+      toastText,
+      Toast.LENGTH_SHORT,
+    ).show()
+  }
+
+  /**
+   * Builds a multi-line toast string from a raw BTP PDF417 payload,
+   * showing each decoded field on its own line so the agent can confirm
+   * every field was read correctly before the scan is queued.
+   */
+  private fun buildBtpToastText(raw: String): String {
+    val lines = mutableListOf("PDF417 decoded:")
+    // Tag number (SGS: BG191399, SGS-JED-..., NOTAG-...)
+    val tagMatch = Regex("""(?i)\b((?:BG|SGS|NOTAG)[A-Z0-9\-]{3,25})\b""").find(raw)
+      ?: Regex("""\b([0-9]{10,13})\b""").find(raw)
+    tagMatch?.value?.let { lines.add("Tag:     $it") }
+    // Passenger name (SURNAME/GIVEN)
+    Regex("""(?i)\b([A-Z]{2,}/[A-Z]{2,})\b""").find(raw)?.value
+      ?.let { lines.add("Pilgrim: $it") }
+    // Carrier + flight number (e.g. EC135)
+    val flightResult = Regex("""\b([A-Z]{2})\s*([0-9]{1,4})\b""").find(raw)
+    flightResult?.let { lines.add("Flight:  ${it.groupValues[1]}${it.groupValues[2]}") }
+    val carrierCode = flightResult?.groupValues?.get(1)
+    // IATA 3-letter station code
+    Regex("""\b([A-Z]{3})\b""").findAll(raw)
+      .map { it.value }
+      .firstOrNull { it != carrierCode }
+      ?.let { lines.add("Station: $it") }
+    // PNR (6-char alphanumeric, uppercase)
+    val tagPrefix = tagMatch?.value?.take(6) ?: ""
+    Regex("""\b([A-Z][A-Z0-9]{5})\b""").findAll(raw)
+      .map { it.value }
+      .firstOrNull { it != tagPrefix && it != carrierCode }
+      ?.let { lines.add("PNR:     $it") }
+    // Sequential bag number
+    Regex("""(?i)\bBN[:\s]*([0-9]{1,4})\b""").find(raw)
+      ?.groupValues?.get(1)
+      ?.let { lines.add("BN:      $it") }
+    return lines.joinToString("\n")
   }
 
   // ---------- DataWedge profile setup ----------
@@ -289,6 +335,11 @@ class ZebraScanModule(reactContext: ReactApplicationContext) :
       try {
         ctx.sendBroadcast(configIntent)
         Log.d(TAG, "Sent SET_CONFIG (cmd=$commandId-config)")
+        Toast.makeText(
+          ctx,
+          "Scanner ready\nEnabled: Code128 · ITF-14 · Code39 · PDF417",
+          Toast.LENGTH_LONG,
+        ).show()
       } catch (t: Throwable) {
         Log.w(TAG, "SET_CONFIG broadcast failed", t)
       }
