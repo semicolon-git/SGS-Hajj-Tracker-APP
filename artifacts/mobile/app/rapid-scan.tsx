@@ -149,7 +149,49 @@ export default function RapidScanScreen() {
           return;
         }
 
+      // Defensive rescue: the live `/api/bags/hajj-check` route has been
+      // observed to return "Bag not found" for tags that demonstrably
+      // exist on a Hajj manifest (server-side bug, tracked separately).
+      // When we get an unknown_tag RED, race a bags-listing fallback
+      // against a short timeout — if the bag really is on a Hajj
+      // manifest, downgrade the flash from RED to AMBER with the
+      // pilgrim name so the supervisor doesn't get a misleading
+      // "unknown bag" on a real bag.
+      if (result.status === "red" && result.reason === "unknown_tag") {
+        const FALLBACK_TIMEOUT_MS = 1500;
+        const rescued = await Promise.race<
+          | Awaited<ReturnType<typeof sgsApi.findBagByTag>>
+          | "__timeout__"
+        >([
+          sgsApi.findBagByTag(tag, { flightId: flight?.id }),
+          new Promise<"__timeout__">((resolve) =>
+            setTimeout(() => resolve("__timeout__"), FALLBACK_TIMEOUT_MS),
+          ),
+        ]);
+        if (
+          rescued &&
+          rescued !== "__timeout__" &&
+          rescued.isHajjBag !== false
+        ) {
+          result = {
+            status: "amber",
+            bagTag: rescued.bagTag,
+            pilgrimName: rescued.pilgrimName,
+            // No accommodation data available from this endpoint —
+            // surface a hint via the message so `classifyHajjCheck`
+            // can render a clear "verify hotel" line.
+            message: t("rapidAmberDegradedHint"),
+            reason: "lookup_degraded",
+          };
+        }
+      }
+
       const decision = classifyHajjCheck(result, t as (k: string) => string);
+      // Surface the degraded-lookup hint in the AMBER decision (the
+      // base classifier doesn't include a hint on amber).
+      if (result.reason === "lookup_degraded" && decision.flash === "yellow") {
+        decision.hint = t("rapidAmberDegradedHint");
+      }
       // Rapid Scan dwells the flash for a fixed 1.5s on every outcome —
       // the spec calls for "every scan flashes full-screen for 1.5s" so
       // operators don't have to learn that green is shorter than red.

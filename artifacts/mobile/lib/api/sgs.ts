@@ -852,6 +852,60 @@ export const sgsApi = {
   },
 
   /**
+   * Defensive fallback used by Rapid Scan when `/api/bags/hajj-check`
+   * returns "Bag not found" for a tag the supervisor knows is on a
+   * manifest. The live backend's hajj-check route has been observed
+   * (Apr 2026) to false-negative on bags that are clearly present in
+   * the bags table — this lookup hits the bags listing endpoint and
+   * filters client-side for an exact `bagTag` match so we can rescue
+   * a false-RED into an AMBER warning.
+   *
+   * Scoped by `flightId` when the caller has a flight pinned (keeps
+   * the response small — typically <50 bags). When no flight is given
+   * we make the call but cap the page size; if the server ignores the
+   * filter and returns a huge page, we still scan it client-side.
+   *
+   * Returns `null` on any failure or when no matching bag is found —
+   * the caller treats that as "no rescue available, keep RED".
+   */
+  findBagByTag: async (
+    tagNumber: string,
+    opts?: { flightId?: string },
+  ): Promise<{
+    bagTag: string;
+    pilgrimName?: string;
+    flightId?: string;
+    flightGroupId?: string;
+    isHajjBag?: boolean;
+  } | null> => {
+    try {
+      const params = new URLSearchParams();
+      params.set("bagTag", tagNumber);
+      params.set("limit", "200");
+      if (opts?.flightId) params.set("flightId", opts.flightId);
+      const list = await request<ServerBag[] | { items?: ServerBag[] }>(
+        `/api/bags?${params.toString()}`,
+      );
+      const arr: ServerBag[] = Array.isArray(list)
+        ? list
+        : Array.isArray((list as { items?: ServerBag[] }).items)
+          ? ((list as { items?: ServerBag[] }).items as ServerBag[])
+          : [];
+      const match = arr.find((b) => String(b.bagTag) === tagNumber);
+      if (!match) return null;
+      return {
+        bagTag: String(match.bagTag),
+        pilgrimName: match.pilgrimName ?? undefined,
+        flightId: match.flightId,
+        flightGroupId: match.flightGroupId ?? match.groupId,
+        isHajjBag: (match as ServerBag & { isHajjBag?: boolean }).isHajjBag,
+      };
+    } catch {
+      return null;
+    }
+  },
+
+  /**
    * Log a red-flash scan (unknown tag / non-Hajj / no Nusuk match) for
    * supervisor audit. Mirrors the web Rapid Scan flow which writes to
    * `red_scan_events`. Treated as best-effort: a 404/405 from the
