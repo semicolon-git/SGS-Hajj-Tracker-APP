@@ -151,6 +151,9 @@ export default function RapidScanScreen() {
       }
 
       const decision = classifyHajjCheck(result, t as (k: string) => string);
+      // Rapid Scan dwells the flash for a fixed 1.5s on every outcome —
+      // the spec calls for "every scan flashes full-screen for 1.5s" so
+      // operators don't have to learn that green is shorter than red.
       trigger(
         {
           color: decision.flash,
@@ -159,6 +162,7 @@ export default function RapidScanScreen() {
           hint: decision.hint,
         },
         decision.hapticKey,
+        1500,
       );
       setLast({
         tag: result.bagTag,
@@ -166,31 +170,28 @@ export default function RapidScanScreen() {
         pilgrimName: result.pilgrimName,
         accommodationName: result.accommodationName,
         accommodationAddress: result.accommodationAddress,
-        reasonText:
-          result.status === "red" ? decision.title : undefined,
+        // Always carry the human-readable headline forward so the
+        // last-scan card can render an explicit reason for amber
+        // ("Manifested — Not Assigned") and red, not just a tag.
+        reasonText: decision.title,
         at: now,
       });
       setCounts((c) => ({ ...c, [result.status]: c[result.status] + 1 }));
 
       if (result.status === "green" || result.status === "amber") {
         // Greens/ambers are persisted as COLLECTED_FROM_BELT events.
-        // The local ScanRequest schema requires a non-empty `groupId`
-        // and the live backend rejects empty manifests, so we only
-        // enqueue when the supervisor has actually picked a flight.
-        // Without a flight Rapid Scan still flashes + counts, treating
-        // the screen as a "tell me where this bag goes" lookup. Reds
-        // are *always* logged because the audit trail is the whole
-        // point of the red endpoint.
-        if (flight?.id) {
-          await queue.enqueue({
-            tagNumber: result.bagTag,
-            groupId: flight.id,
-            flightId: flight.id,
-            scannedAt: new Date(now).toISOString(),
-            source: isZebra ? "zebra" : "camera",
-            deviceId: deviceIdRef.current ?? undefined,
-          });
-        }
+        // The flight selector is optional in Rapid Scan, so we send
+        // empty groupId/flightId when the supervisor hasn't pinned a
+        // flight — `submitScan` translates those to `null` on the
+        // wire so the server can derive the manifest from the tag.
+        await queue.enqueue({
+          tagNumber: result.bagTag,
+          groupId: flight?.id ?? "",
+          flightId: flight?.id ?? "",
+          scannedAt: new Date(now).toISOString(),
+          source: isZebra ? "zebra" : "camera",
+          deviceId: deviceIdRef.current ?? undefined,
+        });
       } else {
         // Red scans never enter the regular queue — fire-and-forget log
         // to the dedicated red-scan endpoint. Best-effort: a network
@@ -494,7 +495,13 @@ function LastScanCard({ last }: { last: LastScan | null }) {
         </Text>
       ) : null}
       {last.reasonText ? (
-        <Text style={[styles.lastLine, { color: colors.sgs.flashRed }, isRTL && { writingDirection: "rtl" }]}>
+        <Text
+          style={[
+            styles.lastLine,
+            { color: accent, fontFamily: FONTS.bodyMedium },
+            isRTL && { writingDirection: "rtl" },
+          ]}
+        >
           {last.reasonText}
         </Text>
       ) : null}

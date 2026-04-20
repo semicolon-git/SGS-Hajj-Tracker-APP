@@ -55,10 +55,20 @@ export function useFlashFeedback() {
   const [flash, setFlash] = useState<FlashState | null>(null);
 
   const trigger = useCallback(
-    (state: FlashState, haptic: HapticKey) => {
+    (
+      state: FlashState,
+      haptic: HapticKey,
+      /**
+       * Optional explicit on-screen duration in milliseconds. When
+       * omitted the per-color default from `FLASH_DURATIONS` is used.
+       * Rapid Scan passes 1500ms for every color so green / amber / red
+       * dwell long enough to be read in a noisy hall.
+       */
+      durationMs?: number,
+    ) => {
       fire(haptic);
       setFlash(state);
-      const ms = FLASH_DURATIONS[state.color];
+      const ms = durationMs ?? FLASH_DURATIONS[state.color];
       setTimeout(() => setFlash(null), ms);
     },
     [],

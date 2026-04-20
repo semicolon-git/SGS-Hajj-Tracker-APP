@@ -667,8 +667,13 @@ export const sgsApi = {
         method: "POST",
         body: JSON.stringify({
           eventType: "COLLECTED_FROM_BELT",
-          flightGroupId: scan.groupId,
-          flightId: scan.flightId,
+          // Rapid Scan submits collected events without a pinned flight
+          // (the supervisor scans across multiple flights at the belt).
+          // Send `null` rather than an empty string so the server can
+          // derive the manifest from the bag tag itself instead of
+          // failing zod validation on an empty UUID.
+          flightGroupId: scan.groupId || null,
+          flightId: scan.flightId || null,
           locationName: scan.source,
           correlationId: uuidv4(),
           // Stable per-install id so the backend can reliably dedupe
