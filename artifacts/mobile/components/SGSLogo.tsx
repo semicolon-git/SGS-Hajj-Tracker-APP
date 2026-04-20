@@ -1,46 +1,33 @@
 import React from "react";
-import Svg, { Circle, Path } from "react-native-svg";
+import { Image } from "react-native";
 
-import colors from "@/constants/colors";
+const LOGO_SOURCE = require("../assets/images/sgs-logo.png");
+const LOGO_ASPECT = 1754 / 397;
 
 /**
- * SGS sunburst mark. Stylised geometric starburst — radiating rays around a
- * central core. Used in headers, splash, and login.
+ * Official SGS mark — green gear + white "SGS" wordmark. Rendered from
+ * the bundled PNG so it always matches brand guidelines.
+ *
+ * `size` controls the rendered HEIGHT in dp; the width is derived from
+ * the artwork's intrinsic aspect ratio so the mark never looks
+ * stretched. Pass a fixed `width` to override.
  */
 export function SGSLogo({
   size = 56,
-  color = colors.sgs.green,
+  width,
 }: {
   size?: number;
+  /** Optional override colour (kept for API compatibility — ignored for the official PNG mark). */
   color?: string;
+  width?: number;
 }) {
-  const cx = 50;
-  const cy = 50;
-  const innerR = 12;
-  const outerR = 46;
-  const rays = 12;
-  const half = (Math.PI / rays) * 0.45;
-
-  const paths = [];
-  for (let i = 0; i < rays; i++) {
-    const a = (i / rays) * Math.PI * 2 - Math.PI / 2;
-    const a1 = a - half;
-    const a2 = a + half;
-    const x1 = cx + Math.cos(a1) * innerR;
-    const y1 = cy + Math.sin(a1) * innerR;
-    const x2 = cx + Math.cos(a) * outerR;
-    const y2 = cy + Math.sin(a) * outerR;
-    const x3 = cx + Math.cos(a2) * innerR;
-    const y3 = cy + Math.sin(a2) * innerR;
-    paths.push(`M${x1},${y1} L${x2},${y2} L${x3},${y3} Z`);
-  }
-
+  const w = width ?? size * LOGO_ASPECT;
   return (
-    <Svg width={size} height={size} viewBox="0 0 100 100">
-      {paths.map((d, i) => (
-        <Path key={i} d={d} fill={color} />
-      ))}
-      <Circle cx={cx} cy={cy} r={innerR - 2} fill={color} />
-    </Svg>
+    <Image
+      source={LOGO_SOURCE}
+      style={{ width: w, height: size }}
+      resizeMode="contain"
+      accessibilityLabel="SGS"
+    />
   );
 }
