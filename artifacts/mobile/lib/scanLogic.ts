@@ -270,17 +270,26 @@ export function classifyHajjCheck(
     };
   }
   if (result.status === "amber") {
+    // Use the `yellow` flash variant — `FlashOverlay` renders `amber`
+    // as a border-only frame (used by the regular scan screen for
+    // "wrong group" warnings) but Rapid Scan needs a true full-screen
+    // fill so the supervisor can read the result without looking at
+    // the device.
     return {
-      flash: "amber",
+      flash: "yellow",
       title: t("rapidAmberTitle"),
       subtitle: result.pilgrimName ?? result.bagTag,
       hapticKey: "warning",
     };
   }
-  // Red: explain what we know.
+  // Red: explain what we know. Localized strings always win — fall
+  // back to a server-supplied `message` only when we don't have a
+  // dedicated translation key, so Arabic mode never leaks an English
+  // fallback for the common unknown-tag case.
   let title = t("rapidRedUnknown");
   if (result.reason === "non_hajj") title = t("rapidRedNonHajj");
   else if (result.reason === "no_nusuk") title = t("rapidRedNoNusuk");
+  else if (result.reason === "unknown_tag") title = t("rapidRedUnknown");
   else if (result.message) title = result.message;
   return {
     flash: "red",
