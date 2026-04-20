@@ -169,10 +169,15 @@ export default function RapidScanScreen() {
         pilgrimName: result.pilgrimName,
         accommodationName: result.accommodationName,
         accommodationAddress: result.accommodationAddress,
-        // Always carry the human-readable headline forward so the
-        // last-scan card can render an explicit reason for amber
-        // ("Manifested — Not Assigned") and red, not just a tag.
-        reasonText: decision.title,
+        // Carry the human-readable headline forward so the last-scan
+        // card can show an explicit reason for amber ("Manifested —
+        // Not Assigned") and red, not just a tag. Suppressed on green
+        // when we already have the hotel info — otherwise the card
+        // would render the hotel name twice.
+        reasonText:
+          result.status === "green" && result.accommodationName
+            ? undefined
+            : decision.title,
         at: now,
       });
       setCounts((c) => ({ ...c, [result.status]: c[result.status] + 1 }));
