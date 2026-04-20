@@ -4,9 +4,11 @@ import { useFocusEffect, useRouter } from "expo-router";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Platform,
   Pressable,
   StyleSheet,
   Text,
+  ToastAndroid,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -23,7 +25,7 @@ import { useScanQueue } from "@/contexts/ScanQueueContext";
 import { useSession } from "@/contexts/SessionContext";
 import { useFlashFeedback } from "@/hooks/useFlashFeedback";
 import { useScannerMode, useZebraScanRaw, useZebraScanner } from "@/hooks/useScanner";
-import { decideScan, normalizeTag } from "@/lib/scanLogic";
+import { decideScan, normalizeTag, parseBtpPdf417 } from "@/lib/scanLogic";
 import {
   getCachedManifest,
   getDebugRawScan,
@@ -386,6 +388,22 @@ export default function ScanScreen() {
                   setRawBanner({ data: r.data, type: r.type });
                   if (rawBannerTimer.current) clearTimeout(rawBannerTimer.current);
                   rawBannerTimer.current = setTimeout(() => setRawBanner(null), 2000);
+                }
+                // For PDF417 camera scans, parse BTP fields and surface them
+                // as a native toast so the agent can confirm every field was
+                // read correctly before the scan enters the queue.
+                if (r.type === "pdf417" && Platform.OS === "android") {
+                  const btp = parseBtpPdf417(r.data);
+                  if (btp) {
+                    const lines = ["PDF417 decoded:"];
+                    lines.push(`Tag:     ${btp.tagNumber}`);
+                    if (btp.pilgrimName) lines.push(`Pilgrim: ${btp.pilgrimName}`);
+                    if (btp.flight)      lines.push(`Flight:  ${btp.flight}`);
+                    if (btp.station)     lines.push(`Station: ${btp.station}`);
+                    if (btp.pnr)         lines.push(`PNR:     ${btp.pnr}`);
+                    if (btp.bagSequence) lines.push(`BN:      ${btp.bagSequence}`);
+                    ToastAndroid.show(lines.join("\n"), ToastAndroid.SHORT);
+                  }
                 }
                 handleScan(r.data);
               }}

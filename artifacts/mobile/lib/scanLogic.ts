@@ -102,21 +102,97 @@ export function decideScan(args: {
  * a raw scan payload. Use this on every scan source (Zebra trigger or
  * camera) before passing to decideScan.
  *
- * Also collapses internal spaces — IATA license plates are usually
- * encoded as a contiguous numeric string ("0065687867") but some
- * printers or OCR fallbacks include the visual spacing
- * ("0 065 687867"). Normalizing here keeps every downstream consumer
- * dealing with a single canonical form.
+ * When the raw payload is an IATA BTP PDF417 record (multi-field string
+ * containing spaces / slashes), parseBtpPdf417 extracts the canonical
+ * bag tag number so the rest of the pipeline never sees the raw blob.
  */
 export function normalizeTag(raw: string): string {
   // Strip ASCII control chars (GS=0x1D, RS=0x1E, EOT=0x04, NUL, etc.) and
   // any AIM identifier prefix DataWedge prepends ("]C1", "]d2", ...).
   let v = raw.replace(/[\x00-\x1F\x7F]/g, "").trim();
   v = v.replace(/^\]\w{2}/, "");
+  // If this looks like a BTP PDF417 payload, extract just the tag number
+  // before collapsing whitespace — detection relies on spaces/slashes
+  // still being present.
+  const btp = parseBtpPdf417(v);
+  if (btp) return btp.tagNumber;
   // Collapse all whitespace inside the payload so "0065 SV 456953" and
   // "0065SV456953" both arrive at decideScan as one canonical string.
   v = v.replace(/\s+/g, "");
   return v;
+}
+
+/**
+ * Fields decoded from an IATA BTP (Baggage Tag Protocol) PDF417 barcode.
+ * The PDF417 on an airline bag tag encodes a structured record containing
+ * the tag number, flight, station, passenger name, PNR and bag sequence
+ * as a single space/slash-delimited string.
+ */
+export interface BtpFields {
+  /** Canonical bag tag number extracted from the payload (e.g. "BG191399") */
+  tagNumber: string;
+  /** IATA 3-letter destination/station code (e.g. "JED") */
+  station?: string;
+  /** Carrier + flight number (e.g. "EC135") */
+  flight?: string;
+  /** Passenger name in IATA SURNAME/GIVEN format (e.g. "NATION/MOHAMMED") */
+  pilgrimName?: string;
+  /** Booking reference / PNR (e.g. "ACLXVY") */
+  pnr?: string;
+  /** Sequential bag number on the booking (e.g. 426) */
+  bagSequence?: number;
+}
+
+/**
+ * Parses an IATA BTP PDF417 payload into its constituent fields.
+ *
+ * A PDF417 on an airline bag tag encodes a structured record rather than
+ * just a bare tag number — the Code 128 linear barcode carries the bare
+ * number. This function extracts the canonical tagNumber plus all
+ * supplementary fields so they can be shown to the agent and the
+ * correct key forwarded to the scan pipeline.
+ *
+ * Returns null when the payload does not look like a BTP record (e.g.
+ * it is already a bare tag number from a Code 128 scan).
+ */
+export function parseBtpPdf417(raw: string): BtpFields | null {
+  // BTP payloads always contain spaces or slashes. A bare Code 128 tag
+  // number never does — use that as the primary gate.
+  if (!raw.includes(" ") && !raw.includes("/")) return null;
+
+  // --- Tag number (primary key) ---
+  // SGS-printed formats: BG191399, SGS-JED-260512-006, NOTAG-JED-042
+  const sgsTagMatch = raw.match(/\b((?:BG|SGS|NOTAG)[A-Z0-9-]{3,25})\b/i);
+  // IATA 10-13 digit license plate (carrier account code + serial number)
+  const iataLpMatch = raw.match(/\b([0-9]{10,13})\b/);
+  const tagNumber = sgsTagMatch?.[1] ?? iataLpMatch?.[1];
+  if (!tagNumber) return null;
+
+  // --- Passenger name (SURNAME/GIVEN format, e.g. NATION/MOHAMMED) ---
+  const nameMatch = raw.match(/\b([A-Z]{2,}\/[A-Z]{2,})\b/i);
+  const pilgrimName = nameMatch?.[1];
+
+  // --- Carrier + flight number (e.g. "EC 135" → "EC135") ---
+  const flightMatch = raw.match(/\b([A-Z]{2})\s*([0-9]{1,4})\b/);
+  const flight = flightMatch ? `${flightMatch[1]}${flightMatch[2]}` : undefined;
+
+  // --- IATA 3-letter station code (exactly 3 uppercase letters) ---
+  // Pick the first 3-letter token that isn't the 2-letter carrier code.
+  const carrierCode = flightMatch?.[1];
+  const stationCandidates = Array.from(raw.matchAll(/\b([A-Z]{3})\b/g)).map(m => m[1]);
+  const station = stationCandidates.find(s => s !== carrierCode);
+
+  // --- PNR / booking reference (6 uppercase alphanumeric chars) ---
+  const pnrCandidates = Array.from(raw.matchAll(/\b([A-Z][A-Z0-9]{5})\b/g))
+    .map(m => m[1])
+    .filter(p => !tagNumber.startsWith(p) && p !== carrierCode);
+  const pnr = pnrCandidates[0];
+
+  // --- Sequential bag number (after BN: or BN followed by digits) ---
+  const bnMatch = raw.match(/\bBN[:\s]*([0-9]{1,4})\b/i);
+  const bagSequence = bnMatch ? parseInt(bnMatch[1], 10) : undefined;
+
+  return { tagNumber, station, flight, pilgrimName, pnr, bagSequence };
 }
 
 /**
