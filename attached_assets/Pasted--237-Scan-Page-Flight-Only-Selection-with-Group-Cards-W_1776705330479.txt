@@ -1,0 +1,38 @@
+#237 - Scan Page: Flight-Only Selection with Group Cards
+What & Why
+Currently operators must select both a flight and a group before they can scan a single bag — a two-step process that slows down high-volume belt operations. The new flow lets the operator pick only the flight, then immediately sees all groups for that flight as cards with live bag counters. Every successful scan auto-increments the correct group's counter without any manual group selection.
+
+Done looks like
+Operator selects a flight → group cards appear immediately, no group dropdown
+Each group card shows: accommodation name, expected bag count, current scanned count, and group status badge
+Scanning a bag automatically highlights and increments the counter on the correct group card (identified from the bag's own flightGroupId returned by the hajj-check response)
+Bulk Receive button/panel lives on the group card itself (not a global panel) — airport ops can trigger it per group
+Driver Handover and Delivery confirmation are triggered from within the relevant group card
+Red (exception) scans still work exactly as before — no group card is incremented
+Offline scan queue continues to function; flightGroupId is omitted from offline events (server resolves from the bag record on sync)
+No-tag bag creation uses flight context only (no group required)
+All existing role restrictions (airport ops vs driver) are preserved
+Out of scope
+Changing any backend API signatures (endpoints stay the same)
+Changing the Rapid Scan / red-green station page
+Any changes to handover or delivery business logic
+Real-time WebSocket push for counter updates (polling/invalidation on scan is sufficient)
+Steps
+Relax the context gate — Change contextReady to require only a selected flight, not a group. Update contextReadyRef and all guards that block scanning or camera start so they only check for a flight. Remove the group dropdown from the flight/group selection UI.
+
+Add group cards grid — After a flight is selected, render a responsive grid of group cards (one per FlightGroupWithMeta). Each card displays: accommodation name (or group number fallback), status badge, and a scannedCount / expectedCount counter. Include a loading skeleton while groups are being fetched.
+
+Auto-increment on scan — After each successful green scan, use data.bag?.flightGroupId from the hajj-check response to identify the matching group card and visually highlight it (brief pulse/glow). Immediately invalidate the groups query so all counters refresh from the server.
+
+Move Bulk Receive to group cards — Place the Bulk Receive trigger button on each group card where status === "PENDING" and the user is not a driver. The existing bulk-receive panel UI expands inline within the card. The API call (/api/flight-groups/:id/bulk-receive) is unchanged.
+
+Move Driver Handover and Delivery to group cards — Place the Handover panel and Arrival/Delivery button on the relevant group card based on its status and the driver role. When a driver taps a card, the card expands to show the handover or delivery action. The API calls are unchanged.
+
+Strip flightGroupId from client-sent scan events — Remove selectedGroupId from the batch submit payload and offline queue entries. The server already resolves group from the bag record (confirmed: line 1771 in routes.ts only assigns group if the bag doesn't already have one). Ensure the no-tag bag creation sends only flightId, not flightGroupId.
+
+Update compact context bar — The sticky top bar (shown after flight selection) should display flight-level progress (total scanned / total expected across all groups) instead of per-group progress. Remove any reference to a selected group name from this bar.
+
+Relevant files
+client/src/pages/scan.tsx
+server/routes.ts:1719-1780
+shared/schema.ts
