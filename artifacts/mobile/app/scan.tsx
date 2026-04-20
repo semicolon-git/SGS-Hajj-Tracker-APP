@@ -674,11 +674,13 @@ function GroupCardsStrip({
       </View>
     );
   }
+  // Vertical 2-column grid above the camera/Zebra view. Height-capped
+  // so the scanner viewfinder below stays visible; the grid scrolls
+  // internally when the flight has many groups.
   return (
     <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      contentContainerStyle={cardStripStyles.row}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={cardStripStyles.grid}
       style={cardStripStyles.strip}
     >
       {groups.map((g) => (
@@ -806,14 +808,16 @@ function GroupCard({
 
 const cardStripStyles = StyleSheet.create({
   strip: {
-    maxHeight: 152,
+    maxHeight: 280,
     backgroundColor: colors.sgs.surface,
     borderBottomColor: colors.sgs.border,
     borderBottomWidth: 1,
   },
-  row: {
+  grid: {
     paddingHorizontal: 12,
     paddingVertical: 10,
+    flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
     alignItems: "stretch",
   },
@@ -833,7 +837,9 @@ const cardStripStyles = StyleSheet.create({
     fontSize: 13,
   },
   card: {
-    width: 168,
+    flexBasis: "48%",
+    flexGrow: 1,
+    minWidth: 140,
     backgroundColor: colors.sgs.surfaceElevated,
     borderColor: colors.sgs.border,
     borderWidth: 1,

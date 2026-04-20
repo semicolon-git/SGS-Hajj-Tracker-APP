@@ -290,7 +290,12 @@ export interface ExceptionOpPayload {
 export interface NoTagOpPayload {
   pilgrimName: string;
   description: string;
-  groupId: string;
+  /**
+   * Optional in the new flight-only mobile flow. When omitted the
+   * backend resolves the bag onto the flight and lets supervisors
+   * route it to the correct group later.
+   */
+  groupId?: string;
   flightId: string;
   stationCode?: string;
   /**
@@ -461,7 +466,13 @@ export async function replaceManifestTag(
  * touch independent storage keys.
  */
 export async function reconcilePlaceholderTag(
-  groupId: string,
+  /**
+   * Optional in the flight-only no-tag flow. When undefined we skip the
+   * per-group scanned-tags / cached-manifest rewrites (those were never
+   * written for groupless no-tag bags) and only rewrite tag references
+   * inside queued ops by tag identity.
+   */
+  groupId: string | undefined,
   oldTag: string,
   newTag: string,
 ): Promise<void> {
@@ -474,7 +485,7 @@ export async function reconcilePlaceholderTag(
       const list = JSON.parse(raw) as QueuedScan[];
       let touched = false;
       for (const s of list) {
-        if (s.groupId === groupId && s.tagNumber === oldTag) {
+        if (s.tagNumber === oldTag && (!groupId || s.groupId === groupId)) {
           s.tagNumber = newTag;
           touched = true;
         }
@@ -494,8 +505,8 @@ export async function reconcilePlaceholderTag(
       for (const op of list) {
         if (
           op.kind === "exception" &&
-          op.payload.groupId === groupId &&
-          op.payload.tagNumber === oldTag
+          op.payload.tagNumber === oldTag &&
+          (!groupId || op.payload.groupId === groupId)
         ) {
           op.payload.tagNumber = newTag;
           touched = true;
@@ -508,8 +519,11 @@ export async function reconcilePlaceholderTag(
   };
 
   await Promise.all([
-    replaceScannedTag(groupId, oldTag, newTag),
-    replaceManifestTag(groupId, oldTag, newTag),
+    // The per-group caches only exist when we actually have a groupId
+    // (legacy pinned-group flow). For groupless no-tag bags those
+    // caches were never written, so there's nothing to rewrite.
+    groupId ? replaceScannedTag(groupId, oldTag, newTag) : Promise.resolve(),
+    groupId ? replaceManifestTag(groupId, oldTag, newTag) : Promise.resolve(),
     rewriteScans(KEYS.queue),
     rewriteScans(KEYS.deadLetter),
     rewriteOps(KEYS.opQueueException),

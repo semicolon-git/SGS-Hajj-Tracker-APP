@@ -434,7 +434,12 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
       // inline, submitOpOnce will swap placeholder→real tag before this
       // returns; if it fails, the placeholder stays and gets reconciled
       // on a later drain.
-      await markTagScanned(payload.groupId, placeholderTag);
+      // Skipped in the new flight-only flow when no groupId is provided
+      // — the bag will appear in flight totals once the server resolves
+      // it onto a group.
+      if (payload.groupId) {
+        await markTagScanned(payload.groupId, placeholderTag);
+      }
       const item = (await enqueueOp({
         kind: "noTag",
         payload: full,

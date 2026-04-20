@@ -881,29 +881,40 @@ export const sgsApi = {
 
   registerNoTag: async (input: {
     pilgrimName: string;
-    groupId: string;
+    /**
+     * Optional in the flight-only mobile flow. When provided we forward
+     * it as `flightGroupId`; otherwise we omit the field entirely so
+     * the backend resolves the group itself.
+     */
+    groupId?: string;
     flightId: string;
     description: string;
     photoBase64?: string;
     stationCode?: string;
   }): Promise<{ id: string; tagNumber: string }> => {
+    const body: Record<string, unknown> = {
+      // Sanitize: backend expects an uppercase 3-letter IATA code.
+      // Trim/uppercase if it looks valid; otherwise omit so the server
+      // can fall back to its own default rather than reject on a bad
+      // value.
+      stationCode: normalizeStationCode(input.stationCode),
+      flightId: input.flightId,
+      pilgrimName: input.pilgrimName,
+      description: input.description,
+    };
+    // Only include flightGroupId when the caller actually has one. The
+    // mobile flight-only flow intentionally omits it so supervisors
+    // route the bag to a group later.
+    if (input.groupId) {
+      body.flightGroupId = input.groupId;
+    }
     const res = await request<{
       id?: string | number;
       bagTag?: string;
       tag?: string;
     }>("/api/bags/no-tag", {
       method: "POST",
-      body: JSON.stringify({
-        // Sanitize: backend expects an uppercase 3-letter IATA code.
-        // Trim/uppercase if it looks valid; otherwise omit so the server
-        // can fall back to its own default rather than reject on a bad
-        // value.
-        stationCode: normalizeStationCode(input.stationCode),
-        flightId: input.flightId,
-        flightGroupId: input.groupId,
-        pilgrimName: input.pilgrimName,
-        description: input.description,
-      }),
+      body: JSON.stringify(body),
     });
     const tagNumber = String(res.bagTag ?? res.tag ?? "");
     if (!tagNumber) {

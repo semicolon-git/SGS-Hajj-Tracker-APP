@@ -1,15 +1,11 @@
-import { useQuery } from "@tanstack/react-query";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { useRouter } from "expo-router";
 import React, { useState } from "react";
 import {
-  ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   ScrollView,
   StyleSheet,
-  Text,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -18,12 +14,10 @@ import { Field } from "@/components/Field";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { ScreenHeader } from "@/components/ScreenHeader";
 import colors from "@/constants/colors";
-import { FONTS } from "@/constants/branding";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocale } from "@/contexts/LocaleContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
 import { useSession } from "@/contexts/SessionContext";
-import { sgsApi } from "@/lib/api/sgs";
 
 export default function NoTagScreen() {
   const router = useRouter();
@@ -33,21 +27,6 @@ export default function NoTagScreen() {
   const { t } = useLocale();
   const insets = useSafeAreaInsets();
 
-  const params = useLocalSearchParams<{ groupId?: string | string[] }>();
-  const paramGroupId = Array.isArray(params.groupId)
-    ? params.groupId[0]
-    : params.groupId;
-
-  const [pickedGroupId, setPickedGroupId] = useState<string | null>(null);
-  const groupId =
-    paramGroupId ?? session.session?.group?.id ?? pickedGroupId ?? null;
-
-  const groupsQ = useQuery({
-    queryKey: ["groups", session.session?.flight.id],
-    queryFn: () => sgsApi.groups(session.session!.flight.id),
-    enabled: !!session.session && !groupId,
-  });
-
   const [pilgrimName, setPilgrimName] = useState("");
   const [description, setDescription] = useState("");
   const [busy, setBusy] = useState(false);
@@ -55,10 +34,6 @@ export default function NoTagScreen() {
   if (!session.session) return null;
 
   const submit = async () => {
-    if (!groupId) {
-      Alert.alert("Pick a group", "Choose which group this bag belongs to.");
-      return;
-    }
     if (!pilgrimName.trim() || !description.trim()) {
       Alert.alert(
         "Missing info",
@@ -77,7 +52,8 @@ export default function NoTagScreen() {
       const result = await queue.enqueueNoTag({
         pilgrimName: pilgrimName.trim(),
         description: description.trim(),
-        groupId: groupId!,
+        // Flight-only no-tag flow: omit groupId so the backend resolves
+        // the bag onto the flight; supervisors route it to a group later.
         flightId: session.session!.flight.id,
         // Forward the agent's station code (e.g. "JED") so the backend
         // generates a tag like "NOTAG-JED-006" rather than defaulting to
@@ -97,47 +73,6 @@ export default function NoTagScreen() {
       setBusy(false);
     }
   };
-
-  if (!groupId) {
-    return (
-      <View style={styles.flex}>
-        <ScreenHeader
-          title="No-Tag Bag"
-          subtitle={t("pickGroup")}
-          onBack={() => router.back()}
-        />
-        <ScrollView
-          contentContainerStyle={[
-            styles.scroll,
-            { paddingBottom: insets.bottom + 24 },
-          ]}
-        >
-          <Text style={styles.pickerHint}>{t("pickGroupHint")}</Text>
-          {groupsQ.isLoading ? (
-            <ActivityIndicator color={colors.sgs.green} />
-          ) : (groupsQ.data ?? []).length === 0 ? (
-            <Text style={styles.pickerHint}>{t("noGroupsForFlight")}</Text>
-          ) : (
-            (groupsQ.data ?? []).map((g) => (
-              <Pressable
-                key={g.id}
-                onPress={() => setPickedGroupId(g.id)}
-                style={({ pressed }) => [
-                  styles.pickerRow,
-                  pressed && { opacity: 0.6 },
-                ]}
-              >
-                <Text style={styles.pickerRowTitle}>{g.groupNumber}</Text>
-                <Text style={styles.pickerRowSub}>
-                  {g.scannedBags}/{g.expectedBags}
-                </Text>
-              </Pressable>
-            ))
-          )}
-        </ScrollView>
-      </View>
-    );
-  }
 
   return (
     <View style={styles.flex}>
@@ -182,32 +117,5 @@ export default function NoTagScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1, backgroundColor: colors.sgs.black },
-  scroll: { padding: 16, gap: 12 },
-  pickerHint: {
-    color: colors.sgs.textMuted,
-    fontFamily: FONTS.body,
-    fontSize: 13,
-    paddingVertical: 4,
-  },
-  pickerRow: {
-    backgroundColor: colors.sgs.surface,
-    borderColor: colors.sgs.border,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  pickerRowTitle: {
-    color: colors.sgs.textPrimary,
-    fontFamily: FONTS.bodyBold,
-    fontSize: 15,
-  },
-  pickerRowSub: {
-    color: colors.sgs.textMuted,
-    fontFamily: FONTS.body,
-    fontSize: 13,
-  },
+  scroll: { padding: 16, gap: 20 },
 });
