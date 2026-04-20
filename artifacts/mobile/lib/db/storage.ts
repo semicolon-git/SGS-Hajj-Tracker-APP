@@ -33,6 +33,12 @@ const KEYS = {
   // validator) so the next "scan shows nothing" report is one tap
   // away from a useful repro.
   debugRawScan: "sgs:debug:rawScan",
+  // User-selected scanner mode override. "auto" defers to device
+  // detection (Zebra hardware → trigger; otherwise → camera). Explicit
+  // "zebra" / "camera" forces that source regardless of detection — used
+  // when an agent is on a Zebra device but the trigger is busted, or
+  // when QA needs to test the camera path on a TC57.
+  scannerMode: "sgs:scannerMode",
 };
 
 export const STORAGE_KEYS = KEYS;
@@ -106,6 +112,29 @@ export async function setDebugRawScan(on: boolean): Promise<void> {
     await AsyncStorage.setItem(KEYS.debugRawScan, on ? "1" : "0");
   } catch {
     // best-effort — not worth crashing the settings screen for
+  }
+}
+
+export type ScannerMode = "auto" | "zebra" | "camera";
+
+const SCANNER_MODES: readonly ScannerMode[] = ["auto", "zebra", "camera"];
+
+export async function getScannerMode(): Promise<ScannerMode> {
+  try {
+    const v = await AsyncStorage.getItem(KEYS.scannerMode);
+    return (SCANNER_MODES as readonly string[]).includes(v ?? "")
+      ? (v as ScannerMode)
+      : "auto";
+  } catch {
+    return "auto";
+  }
+}
+
+export async function setScannerMode(mode: ScannerMode): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.scannerMode, mode);
+  } catch {
+    // best-effort — UI already updated optimistically
   }
 }
 

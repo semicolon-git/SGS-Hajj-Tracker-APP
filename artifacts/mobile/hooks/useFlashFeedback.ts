@@ -48,6 +48,7 @@ export interface FlashState {
   color: FlashColor;
   title: string;
   subtitle?: string;
+  hint?: string;
 }
 
 export function useFlashFeedback() {

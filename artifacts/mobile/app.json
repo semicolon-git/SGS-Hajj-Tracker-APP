@@ -2,7 +2,7 @@
   "expo": {
     "name": "SGS BagScan",
     "slug": "mobile",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "sgsbagscan",
@@ -24,9 +24,10 @@
     },
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "com.semicolon.sgsbagscan",
+      "bundleIdentifier": "app.semicolon.sa.sgsbagscan",
       "infoPlist": {
-        "NSCameraUsageDescription": "SGS BagScan uses the camera to scan luggage tag barcodes."
+        "NSCameraUsageDescription": "SGS BagScan uses the camera to scan luggage tag barcodes.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {

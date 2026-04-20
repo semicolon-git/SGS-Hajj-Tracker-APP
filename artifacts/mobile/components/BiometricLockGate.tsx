@@ -12,6 +12,10 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useLocale } from "@/contexts/LocaleContext";
 
 const BIOMETRIC_PREF_KEY = "sgs.biometricEnabled";
+// Set by LocaleContext before an RTL-triggered reload so the very next cold
+// start skips the biometric prompt — otherwise changing language would always
+// re-lock the app even though the user never actually left.
+const SKIP_NEXT_KEY = "sgs.skipNextBiometric";
 
 export async function setBiometricEnabled(enabled: boolean) {
   await AsyncStorage.setItem(BIOMETRIC_PREF_KEY, enabled ? "1" : "0");
@@ -58,6 +62,14 @@ export function BiometricLockGate({ children }: { children: React.ReactNode }) {
     (async () => {
       if (!auth.token) {
         setLocked(false);
+        setChecked(true);
+        return;
+      }
+      const skip = await AsyncStorage.getItem(SKIP_NEXT_KEY);
+      if (skip === "1") {
+        // Consume the flag and pass through — this cold start was caused by
+        // an RTL-triggered reload, not a real app relaunch.
+        await AsyncStorage.removeItem(SKIP_NEXT_KEY);
         setChecked(true);
         return;
       }

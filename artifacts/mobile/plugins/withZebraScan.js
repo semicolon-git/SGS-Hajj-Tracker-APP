@@ -26,6 +26,10 @@ const {
 } = require("@expo/config-plugins");
 
 const DATAWEDGE_PACKAGE = "com.symbol.datawedge";
+// Must match SCAN_ACTION in plugins/zebra-scan/ZebraScanModule.kt — DataWedge
+// fires this exact action on every trigger pull. If the two ever drift, the
+// receiver gets nothing and scans silently disappear.
+const SCAN_ACTION = "com.semicolon.sgsbagscan.SCAN";
 
 const PACKAGE_PATH = "com/semicolon/sgsbagscan/zebra";
 const SOURCE_DIR = path.join(__dirname, "zebra-scan");
@@ -124,9 +128,52 @@ function withZebraDataWedgeQueries(config) {
   });
 }
 
+/**
+ * Declare the SCAN intent-filter on MainActivity. The runtime receiver in
+ * ZebraScanModule already handles broadcast delivery (mode 2), but declaring
+ * the action in the manifest:
+ *   - lets DataWedge resolve and target this activity if a profile is ever
+ *     switched to "Start Activity" (mode 0) or "Activity broadcast" (mode 1)
+ *   - keeps the action discoverable via PackageManager from other apps that
+ *     query for handlers
+ *   - documents the contract between Kotlin and the manifest in one place
+ */
+function withZebraScanIntentFilter(config) {
+  return withAndroidManifest(config, (cfg) => {
+    const application = cfg.modResults.manifest.application?.[0];
+    if (!application) {
+      throw new Error(
+        "[withZebraScan] No <application> in AndroidManifest — cannot attach SCAN intent-filter.",
+      );
+    }
+    const activity = application.activity?.find(
+      (a) => a?.$?.["android:name"] === ".MainActivity",
+    );
+    if (!activity) {
+      throw new Error(
+        "[withZebraScan] No .MainActivity in AndroidManifest — cannot attach SCAN intent-filter.",
+      );
+    }
+    if (!Array.isArray(activity["intent-filter"])) {
+      activity["intent-filter"] = [];
+    }
+    const already = activity["intent-filter"].some((f) =>
+      f?.action?.some((a) => a?.$?.["android:name"] === SCAN_ACTION),
+    );
+    if (!already) {
+      activity["intent-filter"].push({
+        action: [{ $: { "android:name": SCAN_ACTION } }],
+        category: [{ $: { "android:name": "android.intent.category.DEFAULT" } }],
+      });
+    }
+    return cfg;
+  });
+}
+
 module.exports = function withZebraScan(config) {
   config = withZebraScanSources(config);
   config = withZebraScanPackageRegistered(config);
   config = withZebraDataWedgeQueries(config);
+  config = withZebraScanIntentFilter(config);
   return config;
 };

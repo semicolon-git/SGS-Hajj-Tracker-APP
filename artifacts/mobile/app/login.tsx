@@ -1,4 +1,4 @@
-import { useRouter } from "expo-router";
+import { Feather, Ionicons } from "@expo/vector-icons";
 import React, { useEffect, useState } from "react";
 import {
   KeyboardAvoidingView,
@@ -27,7 +27,6 @@ import { useLocale } from "@/contexts/LocaleContext";
 import { SGS_BASE_URL } from "@/lib/api/sgs";
 
 export default function LoginScreen() {
-  const router = useRouter();
   const auth = useAuth();
   const insets = useSafeAreaInsets();
   const { t, locale, setLocale, isRTL } = useLocale();
@@ -43,6 +42,7 @@ export default function LoginScreen() {
 
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [bioAvailable, setBioAvailable] = useState(false);
@@ -69,11 +69,13 @@ export default function LoginScreen() {
     try {
       await auth.signIn(username.trim(), password);
       // Persist biometric preference selected on this screen so the next
-      // cold-start uses quick-unlock.
+      // cold-start uses quick-unlock. The post-login redirect is handled
+      // by the root-layout route guard once `auth.token` flips, which
+      // avoids a race where the imperative `router.replace` dispatches
+      // before the Stack has settled and drops with "route not found".
       await setBiometricEnabled(bioEnabled && bioAvailable);
-      router.replace("/session-setup");
     } catch (err) {
-      const e = err as Error & { message?: string };
+      const e = err as Error & { message?: string; status?: number };
       const msg = e?.message || "";
       // Network failure → user is offline; show explicit copy per spec.
       if (
@@ -93,16 +95,17 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      behavior={Platform.OS === "ios" ? "padding" : "height"}
+      keyboardVerticalOffset={Platform.OS === "ios" ? insets.top : 0}
     >
       <ScrollView
         contentContainerStyle={[
           styles.scroll,
-          { paddingTop: insets.top + 48, paddingBottom: insets.bottom + 24 },
+          { paddingTop: insets.top + 24, paddingBottom: insets.bottom + 24 },
         ]}
         keyboardShouldPersistTaps="handled"
       >
-        <View style={styles.langRow}>
+        <View style={[styles.langRow, isRTL && { alignItems: "flex-start" }]}>
           <Pressable
             onPress={() => setLocale(locale === "ar" ? "en" : "ar")}
             hitSlop={12}
@@ -127,53 +130,73 @@ export default function LoginScreen() {
             autoCorrect={false}
             placeholder="e.g. SGS-1042"
             returnKeyType="next"
+            isRTL={isRTL}
           />
           <Field
             label={t("password")}
             value={password}
             onChangeText={setPassword}
-            secureTextEntry
+            secureTextEntry={!showPassword}
             placeholder="••••••••"
             returnKeyType="go"
             onSubmitEditing={onSubmit}
+            isRTL={isRTL}
+            rightElement={
+              <Pressable onPress={() => setShowPassword((v) => !v)} hitSlop={8}>
+                <Feather
+                  name={showPassword ? "eye" : "eye-off"}
+                  size={20}
+                  color={colors.sgs.textMuted}
+                />
+              </Pressable>
+            }
           />
           {bioAvailable ? (
-            <View
-              style={[
-                styles.bioRow,
-                isRTL && { flexDirection: "row-reverse" },
+            <Pressable
+              onPress={() => setBioEnabled(!bioEnabled)}
+              style={({ pressed }) => [
+                styles.bioCard,
+                bioEnabled && styles.bioCardActive,
+                pressed && styles.bioCardPressed,
               ]}
             >
-              <View style={{ flex: 1 }}>
-                <Text style={styles.bioTitle}>{t("unlockBiometric")}</Text>
-                <Text style={styles.bioSub}>{t("useBiometric")}</Text>
+              <View style={styles.bioRow}>
+                <View style={[styles.bioIcon, bioEnabled && styles.bioIconActive]}>
+                  <Ionicons
+                    name="finger-print"
+                    size={20}
+                    color={bioEnabled ? colors.sgs.green : colors.sgs.textMuted}
+                  />
+                </View>
+                <View style={styles.bioText}>
+                  <Text style={[styles.bioTitle, { textAlign: isRTL ? "right" : "left" }]}>{t("unlockBiometric")}</Text>
+                  <Text style={[styles.bioSub, { textAlign: isRTL ? "right" : "left" }]}>{t("useBiometric")}</Text>
+                </View>
+                <View style={styles.toggleIcon}>
+                  <Ionicons
+                    name={bioEnabled ? "checkmark-circle" : "ellipse-outline"}
+                    size={24}
+                    color={bioEnabled ? colors.sgs.green : colors.sgs.textDim}
+                  />
+                </View>
               </View>
-              <Switch
-                value={bioEnabled}
-                onValueChange={setBioEnabled}
-                trackColor={{
-                  false: colors.sgs.border,
-                  true: colors.sgs.green,
-                }}
-                thumbColor={colors.sgs.textPrimary}
-              />
-            </View>
+            </Pressable>
           ) : null}
-          {error ? <Text style={styles.errorTxt}>{error}</Text> : null}
+          {error ? <Text style={[styles.errorTxt, { textAlign: isRTL ? "right" : "left" }]}>{error}</Text> : null}
           <PrimaryButton label={t("signIn")} onPress={onSubmit} loading={busy} />
         </View>
 
         <Text style={styles.footer}>
           {t("appTagline")}
-          {auth.lastSyncAt
+          {/* {auth.lastSyncAt
             ? `\n${t("lastSync")} ${new Date(auth.lastSyncAt).toLocaleString([], {
                 month: "short",
                 day: "numeric",
                 hour: "2-digit",
                 minute: "2-digit",
               })}`
-            : ""}
-          {`\nAPI: ${apiHost}`}
+            : ""} */}
+          {/* {`\nAPI: ${apiHost}`} */}
         </Text>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -203,7 +226,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   form: { gap: 18 },
-  langRow: { alignItems: "flex-end" },
+  langRow: { alignItems: "flex-end" as const },
   langBtn: {
     paddingHorizontal: 14,
     paddingVertical: 8,
@@ -216,11 +239,44 @@ const styles = StyleSheet.create({
     color: colors.sgs.textPrimary,
     fontSize: 13,
   },
+  bioCard: {
+    backgroundColor: colors.sgs.surface,
+    borderWidth: 1,
+    borderColor: colors.sgs.border,
+    borderRadius: 12,
+  },
+  bioCardActive: {
+    borderColor: colors.sgs.green,
+    backgroundColor: colors.sgs.surfaceElevated,
+  },
+  bioCardPressed: {
+    opacity: 0.8,
+  },
   bioRow: {
     flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
     gap: 12,
-    paddingVertical: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  bioIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: colors.sgs.surfaceElevated,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bioIconActive: {
+    backgroundColor: "rgba(60, 179, 74, 0.15)",
+  },
+  toggleIcon: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  bioText: {
+    flex: 1,
   },
   bioTitle: {
     fontFamily: FONTS.bodyMedium,

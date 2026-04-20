@@ -37,17 +37,17 @@ const styles = StyleSheet.create({
   wrap: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    gap: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
     borderRadius: 999,
     borderWidth: 1,
   },
-  dot: { width: 6, height: 6, borderRadius: 3 },
+  dot: { width: 5, height: 5, borderRadius: 2.5 },
   txt: {
     color: colors.sgs.textPrimary,
     fontFamily: FONTS.bodyMedium,
-    fontSize: 11,
-    letterSpacing: 0.4,
+    fontSize: 10,
+    letterSpacing: 0.2,
   },
 });

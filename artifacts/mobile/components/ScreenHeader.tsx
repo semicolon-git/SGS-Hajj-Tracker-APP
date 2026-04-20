@@ -5,6 +5,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import colors from "@/constants/colors";
 import { FONTS } from "@/constants/branding";
+import { useLocale } from "@/contexts/LocaleContext";
 
 import { SGSLogo } from "./SGSLogo";
 
@@ -22,13 +23,17 @@ export function ScreenHeader({
   showLogo?: boolean;
 }) {
   const insets = useSafeAreaInsets();
+  const { isRTL } = useLocale();
+  // In RTL, flexDirection:row already swaps the back slot to the visual right;
+  // mirror the chevron too so it points toward the previous screen.
+  const backIcon = isRTL ? "chevron-right" : "chevron-left";
   return (
     <View style={[styles.wrap, { paddingTop: insets.top + 8 }]}>
       <View style={styles.row}>
         <View style={styles.left}>
           {onBack ? (
             <Pressable onPress={onBack} hitSlop={12}>
-              <Feather name="chevron-left" size={28} color={colors.sgs.textPrimary} />
+              <Feather name={backIcon} size={28} color={colors.sgs.textPrimary} />
             </Pressable>
           ) : showLogo ? (
             <SGSLogo size={28} />

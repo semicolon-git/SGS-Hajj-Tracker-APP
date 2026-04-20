@@ -160,7 +160,14 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
         continue;
       }
       try {
-        await sgsApi.submitScan(item);
+        const result = await sgsApi.submitScan(item);
+        if (result.result === "unknown") {
+          // The server confirmed the bag doesn't exist — retrying will never
+          // succeed. Move straight to dead-letter so the queue drains cleanly
+          // and the agent sees an accurate failed-scan count.
+          item.lastError = result.message ?? "Bag not found on server (404)";
+          await moveToDeadLetter(item);
+        }
       } catch (err) {
         item.attempts += 1;
         item.lastError = (err as Error).message;

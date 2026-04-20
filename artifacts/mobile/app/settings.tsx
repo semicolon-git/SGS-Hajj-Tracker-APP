@@ -23,9 +23,13 @@ import { useOtaUpdater, type OtaCheckPhase } from "@/hooks/useOtaUpdater";
 import {
   isDataWedgeAvailable,
   reconfigureZebraProfile,
-  useIsZebraDevice,
+  useScannerMode,
 } from "@/hooks/useScanner";
-import { getDebugRawScan, setDebugRawScan } from "@/lib/db/storage";
+import {
+  getDebugRawScan,
+  setDebugRawScan,
+  type ScannerMode,
+} from "@/lib/db/storage";
 import type { StringKey } from "@/lib/i18n";
 
 type T = (k: StringKey) => string;
@@ -47,7 +51,11 @@ export default function SettingsScreen() {
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rawScanOn, setRawScanOn] = useState(false);
 
-  const isZebra = useIsZebraDevice();
+  const {
+    mode: scannerMode,
+    detected: isZebra,
+    setMode: setScannerMode,
+  } = useScannerMode();
   // Renders the Reconfigure button only when both the JS-side detector
   // says we're on Zebra hardware AND the native bridge confirms the
   // DataWedge package is actually installed. Avoids showing a button
@@ -218,6 +226,27 @@ export default function SettingsScreen() {
         </Text>
 
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{t("scannerSection")}</Text>
+          <Text style={styles.sectionBody}>{t("scannerSectionBody")}</Text>
+
+          <ScannerModeSelector
+            value={scannerMode}
+            onChange={setScannerMode}
+            t={t}
+          />
+
+          <Text style={styles.scannerDetectedLine}>
+            {t("scannerDetected")}{" "}
+            <Text style={styles.scannerDetectedValue}>
+              {isZebra ? t("scannerDetectedZebra") : t("scannerDetectedConsumer")}
+            </Text>
+          </Text>
+          {scannerMode !== "auto" ? (
+            <Text style={styles.scannerOverrideLine}>{t("scannerOverride")}</Text>
+          ) : null}
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>{t("diagnostics")}</Text>
           <View style={styles.toggleRow}>
             <View style={styles.toggleText}>
@@ -381,6 +410,56 @@ function StatusText({
     default:
       return <>{t("checkForUpdatesHint")}</>;
   }
+}
+
+function ScannerModeSelector({
+  value,
+  onChange,
+  t,
+}: {
+  value: ScannerMode;
+  onChange: (mode: ScannerMode) => void;
+  t: T;
+}) {
+  const options: { mode: ScannerMode; label: string }[] = [
+    { mode: "auto", label: t("scannerModeAuto") },
+    { mode: "zebra", label: t("scannerModeZebra") },
+    { mode: "camera", label: t("scannerModeCamera") },
+  ];
+  return (
+    <View
+      style={styles.segmented}
+      accessibilityRole="radiogroup"
+      accessibilityLabel={t("scannerMode")}
+    >
+      {options.map((opt) => {
+        const selected = value === opt.mode;
+        return (
+          <Pressable
+            key={opt.mode}
+            onPress={() => onChange(opt.mode)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected }}
+            accessibilityLabel={opt.label}
+            style={({ pressed }) => [
+              styles.segmentedItem,
+              selected && styles.segmentedItemSelected,
+              pressed && !selected && styles.segmentedItemPressed,
+            ]}
+          >
+            <Text
+              style={[
+                styles.segmentedItemText,
+                selected && styles.segmentedItemTextSelected,
+              ]}
+            >
+              {opt.label}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 function Row({
@@ -574,5 +653,54 @@ const styles = StyleSheet.create({
     fontFamily: FONTS.bodyMedium,
     fontSize: 12,
     color: colors.sgs.flashRed,
+  },
+  segmented: {
+    flexDirection: "row",
+    backgroundColor: colors.sgs.surfaceElevated,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: colors.sgs.borderStrong,
+    padding: 3,
+    gap: 3,
+    marginTop: 6,
+  },
+  segmentedItem: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 7,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  segmentedItemSelected: {
+    backgroundColor: colors.sgs.green,
+  },
+  segmentedItemPressed: {
+    backgroundColor: colors.sgs.surface,
+  },
+  segmentedItemText: {
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 13,
+    color: colors.sgs.textPrimary,
+    letterSpacing: 0.2,
+  },
+  segmentedItemTextSelected: {
+    fontFamily: FONTS.bodyBold,
+    color: colors.sgs.black,
+  },
+  scannerDetectedLine: {
+    fontFamily: FONTS.body,
+    fontSize: 12,
+    color: colors.sgs.textMuted,
+    marginTop: 8,
+  },
+  scannerDetectedValue: {
+    fontFamily: FONTS.bodyBold,
+    color: colors.sgs.textPrimary,
+  },
+  scannerOverrideLine: {
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 12,
+    color: colors.sgs.flashAmber,
+    marginTop: 2,
   },
 });
