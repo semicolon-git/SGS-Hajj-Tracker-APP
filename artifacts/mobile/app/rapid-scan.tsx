@@ -39,10 +39,9 @@ import {
   sgsApi,
   type BagGroup,
   type Flight,
-  type HajjCheckResult,
   type ManifestBag,
 } from "@/lib/api/sgs";
-import { classifyHajjCheck, normalizeTag } from "@/lib/scanLogic";
+import { normalizeTag } from "@/lib/scanLogic";
 
 const DEBOUNCE_MS = 1500;
 
@@ -307,84 +306,77 @@ export default function RapidScanScreen() {
           return;
         }
 
-        // ---------- Fallback: server hajj-check ----------
-        // Tag isn't on this flight's cached manifest. Could be a
-        // genuinely unknown tag, or a bag belonging to another
-        // flight. Defer to the existing classifier.
-        let result: HajjCheckResult;
-        try {
-          result = await sgsApi.hajjCheck(tag);
-        } catch {
-          // Network failure → sticky red but don't burn a count, since
-          // we can't be sure whether the bag is actually unrecognized
-          // or just unreachable.
+        // ---------- Fallback: flight-scoped server lookup ----------
+        // The tag isn't in our cached manifest for this flight. Use
+        // the flight-scoped `/api/bags?bagTag=&flightId=` endpoint to
+        // confirm whether the bag actually belongs to the selected
+        // flight. We deliberately do NOT use the global `/hajj-check`
+        // here — it would happily classify a bag from a different
+        // flight as green/amber and pollute this flight's counters.
+        const rescued = await sgsApi.findBagByTag(tag, {
+          flightId: flight.id,
+        });
+
+        // No match on this flight → red. Treat any bag the server
+        // can't confirm as belonging here as "unknown" for the
+        // purposes of the operator's decision.
+        if (!rescued || rescued.flightId !== flight.id) {
           trigger(
             {
               color: "red",
-              title: t("rapidLookupFailed"),
+              title: t("rapidRedUnknown"),
               subtitle: tag,
             },
             "error",
             0,
           );
+          setCounts((c) => ({ ...c, red: c.red + 1 }));
+          sgsApi
+            .logRedScan({
+              tagNumber: tag,
+              reason: "unknown_tag",
+              flightId: flight.id,
+            })
+            .catch(() => undefined);
           return;
         }
 
-        // Defensive rescue: the live `/api/bags/hajj-check` route has
-        // been observed to return "Bag not found" for tags that
-        // demonstrably exist on a Hajj manifest. When we get an
-        // unknown_tag RED, race a bags-listing fallback against a
-        // short timeout — if the bag really is on a Hajj manifest,
-        // downgrade to AMBER with the pilgrim name.
-        if (result.status === "red" && result.reason === "unknown_tag") {
-          const FALLBACK_TIMEOUT_MS = 1500;
-          const rescued = await Promise.race<
-            | Awaited<ReturnType<typeof sgsApi.findBagByTag>>
-            | "__timeout__"
-          >([
-            sgsApi.findBagByTag(tag, { flightId: flight.id }),
-            new Promise<"__timeout__">((resolve) =>
-              setTimeout(() => resolve("__timeout__"), FALLBACK_TIMEOUT_MS),
-            ),
-          ]);
-          if (
-            rescued &&
-            rescued !== "__timeout__" &&
-            rescued.isHajjBag === true
-          ) {
-            result = {
-              status: "amber",
-              bagTag: rescued.bagTag,
-              pilgrimName: rescued.pilgrimName,
-              message: t("rapidAmberDegradedHint"),
-              reason: "lookup_degraded",
-            };
-          }
+        // Bag is confirmed on this flight. Mirror the local-classify
+        // branch: non-Hajj → red, accommodation present → green,
+        // missing → amber.
+        const isHajj = rescued.isHajjBag !== false;
+        const accommodation = rescued.flightGroupId
+          ? groupAccommodation.get(rescued.flightGroupId)
+          : undefined;
+        let status: "green" | "amber" | "red";
+        let title: string;
+        let subtitle: string | undefined;
+        let hapticKey: "success" | "warning" | "error";
+        if (!isHajj) {
+          status = "red";
+          title = t("rapidRedNonHajj");
+          subtitle = rescued.bagTag;
+          hapticKey = "error";
+        } else if (accommodation) {
+          status = "green";
+          title = accommodation;
+          subtitle = rescued.pilgrimName || rescued.bagTag;
+          hapticKey = "success";
+        } else {
+          status = "amber";
+          title = t("rapidAmberTitle");
+          subtitle = rescued.pilgrimName || rescued.bagTag;
+          hapticKey = "warning";
         }
+        const flashColor =
+          status === "green" ? "green" : status === "amber" ? "yellow" : "red";
+        trigger({ color: flashColor, title, subtitle }, hapticKey, 0);
+        setCounts((c) => ({ ...c, [status]: c[status] + 1 }));
 
-        const decision = classifyHajjCheck(result, t as (k: string) => string);
-        if (result.reason === "lookup_degraded" && decision.flash === "yellow") {
-          decision.hint = t("rapidAmberDegradedHint");
-        }
-        // Sticky flash for the fallback path too.
-        trigger(
-          {
-            color: decision.flash,
-            title: decision.title,
-            subtitle: decision.subtitle,
-            hint: decision.hint,
-          },
-          decision.hapticKey,
-          0,
-        );
-        setCounts((c) => ({ ...c, [result.status]: c[result.status] + 1 }));
-
-        if (result.status === "green" || result.status === "amber") {
-          // Tag wasn't cached locally, so groupId is unknown. Omit it
-          // and let the server resolve from the bag tag rather than
-          // misattributing to flight.id.
+        if (status === "green" || status === "amber") {
           await queue.enqueue({
-            tagNumber: result.bagTag,
+            tagNumber: rescued.bagTag,
+            groupId: rescued.flightGroupId,
             flightId: flight.id,
             scannedAt: new Date(now).toISOString(),
             source: isZebra ? "zebra" : "camera",
@@ -393,8 +385,8 @@ export default function RapidScanScreen() {
         } else {
           sgsApi
             .logRedScan({
-              tagNumber: result.bagTag,
-              reason: result.reason ?? "unknown_tag",
+              tagNumber: rescued.bagTag,
+              reason: "non_hajj",
               flightId: flight.id,
             })
             .catch(() => undefined);
