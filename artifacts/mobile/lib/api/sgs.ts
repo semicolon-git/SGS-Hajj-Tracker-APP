@@ -246,6 +246,14 @@ export interface BagGroup {
   expectedBags: number;
   scannedBags: number;
   assigned?: boolean;
+  /**
+   * Raw accommodation name (typically a hotel name) the group is bound
+   * to. `groupNumber` already falls back to this string for display, but
+   * we also keep an explicit field so Rapid Scan can render "Hotel: …"
+   * for a green local-manifest hit without needing to second-guess
+   * whether `groupNumber` carries an accommodation or a fallback id.
+   */
+  accommodationName?: string;
 }
 
 export interface ManifestBag {
@@ -264,6 +272,14 @@ export interface ManifestBag {
    * backend hasn't recorded the airline tag for this bag yet.
    */
   iataTag?: string;
+  /**
+   * True when the bag is part of a Hajj manifest. Optional because not
+   * every backend build emits the field on the listing endpoint; when
+   * undefined we defer to the bag being present on the manifest as
+   * evidence enough that it's a Hajj bag (Receiving uses the same
+   * heuristic). Used by Rapid Scan's local-first classifier.
+   */
+  isHajjBag?: boolean;
 }
 
 export interface ScanRequest {
@@ -372,6 +388,7 @@ interface ServerBag {
   licensePlate?: string | null;
   airlineTag?: string | null;
   airlineBagTag?: string | null;
+  isHajjBag?: boolean | null;
 }
 
 function normalizeFlight(f: ServerFlight): Flight {
@@ -417,6 +434,7 @@ function normalizeGroup(g: ServerFlightGroup): BagGroup {
     scannedBags:
       g.scannedBags ?? g.scannedBagCount ?? g.actualBagCount ?? 0,
     assigned: g.assigned,
+    accommodationName: g.accommodationName,
   };
 }
 
@@ -444,6 +462,7 @@ function normalizeBag(b: ServerBag): ManifestBag {
     iataTag: normalizeIataTag(
       b.iataTag ?? b.iataLicensePlate ?? b.licensePlate ?? b.airlineTag ?? b.airlineBagTag,
     ),
+    isHajjBag: b.isHajjBag ?? undefined,
   };
 }
 

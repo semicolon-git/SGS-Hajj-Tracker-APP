@@ -1,7 +1,8 @@
 import { Feather } from "@expo/vector-icons";
+import { useQueries, useQuery } from "@tanstack/react-query";
 import { CameraView, useCameraPermissions } from "expo-camera";
 import { useFocusEffect, useRouter } from "expo-router";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -27,33 +28,37 @@ import { useFlashFeedback } from "@/hooks/useFlashFeedback";
 import { useScannerMode, useZebraScanner } from "@/hooks/useScanner";
 import {
   cacheFlights,
+  cacheGroups,
+  cacheManifest,
   getCachedFlights,
+  getCachedGroups,
+  getCachedManifest,
   getOrCreateDeviceId,
 } from "@/lib/db/storage";
-import { sgsApi, type Flight, type HajjCheckResult } from "@/lib/api/sgs";
+import {
+  sgsApi,
+  type BagGroup,
+  type Flight,
+  type HajjCheckResult,
+  type ManifestBag,
+} from "@/lib/api/sgs";
 import { classifyHajjCheck, normalizeTag } from "@/lib/scanLogic";
 
 const DEBOUNCE_MS = 1500;
 
 type Counts = { green: number; amber: number; red: number };
 
-type LastScan = {
-  tag: string;
-  status: "green" | "amber" | "red";
-  pilgrimName?: string;
-  accommodationName?: string;
-  accommodationAddress?: string;
-  reasonText?: string;
-  at: number;
-};
-
 /**
  * Rapid Scan — distraction-free belt-clearing screen for admin / duty
- * manager / airport ops staff. Bypasses session-setup: every scan hits
- * `/api/bags/hajj-check` directly and renders one of three full-screen
- * results (green / amber / red). Greens + ambers enqueue through the
- * regular ScanQueueContext (event type COLLECTED_FROM_BELT). Reds call
- * the dedicated red-scan logger.
+ * manager / airport ops staff. Flight-pinned: the operator picks a
+ * flight up front, the screen pre-fetches that flight's full manifest
+ * (groups + per-group bags) into memory + offline cache, and then
+ * resolves every subsequent scan against the cached manifest first
+ * (`isHajjBag === true` → green if accommodation present, amber if
+ * not). Tags not on the cached manifest fall through to the existing
+ * `/api/bags/hajj-check` path. Greens + ambers enqueue through the
+ * regular ScanQueueContext (event type COLLECTED_FROM_BELT). Reds are
+ * fire-and-forget logged to the dedicated red-scan endpoint.
  */
 export default function RapidScanScreen() {
   const router = useRouter();
@@ -63,11 +68,10 @@ export default function RapidScanScreen() {
   const isZebra = scannerSource === "zebra";
   const insets = useSafeAreaInsets();
   const { t, isRTL } = useLocale();
-  const { flash, trigger } = useFlashFeedback();
+  const { flash, trigger, clearFlash } = useFlashFeedback();
 
   const [permission, requestPermission] = useCameraPermissions();
   const [counts, setCounts] = useState<Counts>({ green: 0, amber: 0, red: 0 });
-  const [last, setLast] = useState<LastScan | null>(null);
   const [busy, setBusy] = useState(false);
   const [flight, setFlight] = useState<Flight | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -82,8 +86,9 @@ export default function RapidScanScreen() {
     });
   }, []);
 
-  // Lazily load flight list the first time the picker opens. Cache hit
-  // makes repeat opens instant and keeps the screen useful offline.
+  // ---------------------------------------------------------------
+  // Flight list (lazy: only fetched when the picker is opened).
+  // ---------------------------------------------------------------
   const loadFlights = useCallback(async () => {
     setFlightsLoading(true);
     try {
@@ -100,18 +105,129 @@ export default function RapidScanScreen() {
     }
   }, []);
 
-  // Auto-request camera permission on consumer phones when the camera
-  // mode is active.
+  // ---------------------------------------------------------------
+  // Flight-pinned manifest pre-fetch. Mirrors `app/scan.tsx`:
+  // groups query → parallel per-group manifest queries → merged
+  // tag→ManifestBag lookup. Each manifest is also written through to
+  // the offline cache so the next session opens instantly even on a
+  // weak airport link.
+  // ---------------------------------------------------------------
+  const flightId = flight?.id ?? null;
+  const groupsQ = useQuery({
+    queryKey: ["rapid-scan", "groups", flightId],
+    queryFn: async () => {
+      try {
+        const fresh = await sgsApi.groups(flightId as string);
+        await cacheGroups(flightId as string, fresh);
+        return fresh;
+      } catch {
+        const cached = await getCachedGroups<BagGroup[]>(flightId as string);
+        if (cached.data) return cached.data;
+        throw new Error("groups_unavailable");
+      }
+    },
+    enabled: !!flightId,
+    staleTime: 60_000,
+  });
+  const groups = groupsQ.data ?? [];
+
+  const manifestQs = useQueries({
+    queries: groups.map((g) => ({
+      queryKey: ["rapid-scan", "manifest", g.id],
+      queryFn: async () => {
+        try {
+          const fresh = await sgsApi.manifest(g.id);
+          await cacheManifest(g.id, fresh);
+          return fresh;
+        } catch {
+          const cached = await getCachedManifest(g.id);
+          return cached ?? [];
+        }
+      },
+      enabled: !!flightId,
+      staleTime: 60_000,
+      retry: 0,
+    })),
+  });
+
+  // Merged tag → ManifestBag lookup across every group on this flight,
+  // plus IATA license-plate aliases so an agent scanning the airline
+  // tag still resolves correctly. Built once per render from the
+  // manifest queries' resolved data.
+  const mergedManifest = useMemo(() => {
+    const out = new Map<string, ManifestBag>();
+    manifestQs.forEach((q) => {
+      for (const bag of q.data ?? []) {
+        out.set(bag.tagNumber, bag);
+        if (bag.iataTag) out.set(bag.iataTag, bag);
+      }
+    });
+    return out;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [manifestQs.map((q) => q.dataUpdatedAt).join("|")]);
+
+  // groupId → accommodationName (for green-result hint rendering). We
+  // intentionally use ONLY the explicit accommodation field — not the
+  // `groupNumber` display fallback, which is always populated by the
+  // normalizer (id slice, terminal code, etc.). Treating that fallback
+  // as "has accommodation" would make every cached Hajj bag flash
+  // green and the amber bucket would never fire.
+  const groupAccommodation = useMemo(() => {
+    const out = new Map<string, string | undefined>();
+    for (const g of groups) {
+      out.set(g.id, g.accommodationName);
+    }
+    return out;
+  }, [groups]);
+
+  // Readiness/error guards derived from query state only. Avoiding
+  // vacuous-truth pitfalls of `manifestQs.every(...)` on empty arrays
+  // (which would otherwise mark a flight with zero groups as both
+  // "errored" and "ready"). A flight with zero bags is a valid state —
+  // the operator just gets the idle scan surface with a 0-bag count.
+  const manifestLoading =
+    !!flightId &&
+    (groupsQ.isLoading ||
+      groupsQ.isFetching ||
+      manifestQs.some((q) => q.isLoading || q.isFetching));
+  const manifestError =
+    !!flightId &&
+    (groupsQ.isError ||
+      (groups.length > 0 && manifestQs.every((q) => q.isError)));
+  const manifestReady =
+    !!flightId && groupsQ.isSuccess && !manifestLoading && !manifestError;
+
+  const totalManifestSize = mergedManifest.size;
+
+  // ---------------------------------------------------------------
+  // Camera permission (consumer phones only) — only request once a
+  // flight is pinned + manifest is ready, so the camera doesn't
+  // light up before the operator can do anything with it.
+  // ---------------------------------------------------------------
   useEffect(() => {
-    if (!isZebra && permission && !permission.granted && permission.canAskAgain) {
+    if (
+      !isZebra &&
+      manifestReady &&
+      permission &&
+      !permission.granted &&
+      permission.canAskAgain
+    ) {
       requestPermission();
     }
-  }, [isZebra, permission, requestPermission]);
+  }, [isZebra, manifestReady, permission, requestPermission]);
 
+  // ---------------------------------------------------------------
+  // Scan handler.
+  // ---------------------------------------------------------------
   const handleScan = useCallback(
     async (raw: string) => {
       const tag = normalizeTag(raw);
       if (!tag) return;
+      // Manifest must be loaded before we accept scans. The empty
+      // state hides the camera/Zebra surface, but defensive guard
+      // here so a stray scan event during the load can't slip through.
+      if (!flight || !manifestReady) return;
+
       const now = Date.now();
       // Same debounce window as the regular scan screen — prevents the
       // Zebra trigger from re-firing the same payload twice in a row
@@ -123,21 +239,86 @@ export default function RapidScanScreen() {
       ) {
         return;
       }
-      // Hard guard against parallel runs. The tag-debounce above stops
-      // duplicate-tag re-fires; this guard stops the Zebra from
-      // interleaving *different* tags while a network lookup is still
-      // in flight (which would race setLast/setCounts/queue.enqueue).
+      // Hard guard against parallel runs.
       if (busy) return;
       lastScan.current = { tag, at: now };
       setBusy(true);
       try {
+        // ---------- Local-first resolution ----------
+        const cached = mergedManifest.get(tag);
+        if (cached) {
+          // A match against the flight's cached manifest. The bag is
+          // by construction on a manifested Hajj flight; treat
+          // `isHajjBag === false` as the only explicit way to flip
+          // it red (older API builds omit the field, in which case
+          // we trust the manifest).
+          const isHajj = cached.isHajjBag !== false;
+          const accommodation = groupAccommodation.get(cached.groupId);
+          let status: "green" | "amber" | "red";
+          let title: string;
+          let subtitle: string | undefined;
+          let hint: string | undefined;
+          let hapticKey: "success" | "warning" | "error";
+          if (!isHajj) {
+            status = "red";
+            title = t("rapidRedNonHajj");
+            subtitle = cached.tagNumber;
+            hapticKey = "error";
+          } else if (accommodation) {
+            status = "green";
+            title = accommodation;
+            subtitle = cached.pilgrimName || cached.tagNumber;
+            hapticKey = "success";
+          } else {
+            status = "amber";
+            title = t("rapidAmberTitle");
+            subtitle = cached.pilgrimName || cached.tagNumber;
+            hapticKey = "warning";
+          }
+
+          const flashColor =
+            status === "green" ? "green" : status === "amber" ? "yellow" : "red";
+          // Sticky flash — duration 0 means the panel stays on screen
+          // until the next scan replaces it.
+          trigger(
+            { color: flashColor, title, subtitle, hint },
+            hapticKey,
+            0,
+          );
+          setCounts((c) => ({ ...c, [status]: c[status] + 1 }));
+
+          if (status === "green" || status === "amber") {
+            await queue.enqueue({
+              tagNumber: cached.tagNumber,
+              groupId: cached.groupId,
+              flightId: flight.id,
+              scannedAt: new Date(now).toISOString(),
+              source: isZebra ? "zebra" : "camera",
+              deviceId: deviceIdRef.current ?? undefined,
+            });
+          } else {
+            sgsApi
+              .logRedScan({
+                tagNumber: cached.tagNumber,
+                reason: "non_hajj",
+                flightId: flight.id,
+              })
+              .catch(() => undefined);
+          }
+          return;
+        }
+
+        // ---------- Fallback: server hajj-check ----------
+        // Tag isn't on this flight's cached manifest. Could be a
+        // genuinely unknown tag, or a bag belonging to another
+        // flight. Defer to the existing classifier.
         let result: HajjCheckResult;
         try {
           result = await sgsApi.hajjCheck(tag);
         } catch {
-          // Network failure → treat as red but don't burn a count, since
-          // we can't be sure whether the bag is actually unrecognized or
-          // just unreachable. Show the lookup-failed toast via the flash.
+          // Network failure → sticky red but don't burn a count, since
+          // we can't be sure whether the bag is actually unrecognized
+          // or just unreachable.
           trigger(
             {
               color: "red",
@@ -145,126 +326,102 @@ export default function RapidScanScreen() {
               subtitle: tag,
             },
             "error",
+            0,
           );
           return;
         }
 
-      // Defensive rescue: the live `/api/bags/hajj-check` route has been
-      // observed to return "Bag not found" for tags that demonstrably
-      // exist on a Hajj manifest (server-side bug, tracked separately).
-      // When we get an unknown_tag RED, race a bags-listing fallback
-      // against a short timeout — if the bag really is on a Hajj
-      // manifest, downgrade the flash from RED to AMBER with the
-      // pilgrim name so the supervisor doesn't get a misleading
-      // "unknown bag" on a real bag.
-      if (result.status === "red" && result.reason === "unknown_tag") {
-        const FALLBACK_TIMEOUT_MS = 1500;
-        const rescued = await Promise.race<
-          | Awaited<ReturnType<typeof sgsApi.findBagByTag>>
-          | "__timeout__"
-        >([
-          sgsApi.findBagByTag(tag, { flightId: flight?.id }),
-          new Promise<"__timeout__">((resolve) =>
-            setTimeout(() => resolve("__timeout__"), FALLBACK_TIMEOUT_MS),
-          ),
-        ]);
-        // Strict: only rescue when the bags endpoint explicitly flags
-        // the record as a Hajj bag. `isHajjBag` is optional on the
-        // wire; when it's missing or false we keep the original RED
-        // rather than risk amber-flashing a genuinely non-Hajj tag.
-        if (
-          rescued &&
-          rescued !== "__timeout__" &&
-          rescued.isHajjBag === true
-        ) {
-          result = {
-            status: "amber",
-            bagTag: rescued.bagTag,
-            pilgrimName: rescued.pilgrimName,
-            // No accommodation data available from this endpoint —
-            // surface a hint via the message so `classifyHajjCheck`
-            // can render a clear "verify hotel" line.
-            message: t("rapidAmberDegradedHint"),
-            reason: "lookup_degraded",
-          };
+        // Defensive rescue: the live `/api/bags/hajj-check` route has
+        // been observed to return "Bag not found" for tags that
+        // demonstrably exist on a Hajj manifest. When we get an
+        // unknown_tag RED, race a bags-listing fallback against a
+        // short timeout — if the bag really is on a Hajj manifest,
+        // downgrade to AMBER with the pilgrim name.
+        if (result.status === "red" && result.reason === "unknown_tag") {
+          const FALLBACK_TIMEOUT_MS = 1500;
+          const rescued = await Promise.race<
+            | Awaited<ReturnType<typeof sgsApi.findBagByTag>>
+            | "__timeout__"
+          >([
+            sgsApi.findBagByTag(tag, { flightId: flight.id }),
+            new Promise<"__timeout__">((resolve) =>
+              setTimeout(() => resolve("__timeout__"), FALLBACK_TIMEOUT_MS),
+            ),
+          ]);
+          if (
+            rescued &&
+            rescued !== "__timeout__" &&
+            rescued.isHajjBag === true
+          ) {
+            result = {
+              status: "amber",
+              bagTag: rescued.bagTag,
+              pilgrimName: rescued.pilgrimName,
+              message: t("rapidAmberDegradedHint"),
+              reason: "lookup_degraded",
+            };
+          }
         }
-      }
 
-      const decision = classifyHajjCheck(result, t as (k: string) => string);
-      // Surface the degraded-lookup hint in the AMBER decision (the
-      // base classifier doesn't include a hint on amber).
-      if (result.reason === "lookup_degraded" && decision.flash === "yellow") {
-        decision.hint = t("rapidAmberDegradedHint");
-      }
-      // Rapid Scan dwells the flash for a fixed 1.5s on every outcome —
-      // the spec calls for "every scan flashes full-screen for 1.5s" so
-      // operators don't have to learn that green is shorter than red.
-      trigger(
-        {
-          color: decision.flash,
-          title: decision.title,
-          subtitle: decision.subtitle,
-          hint: decision.hint,
-        },
-        decision.hapticKey,
-        1500,
-      );
-      setLast({
-        tag: result.bagTag,
-        status: result.status,
-        pilgrimName: result.pilgrimName,
-        accommodationName: result.accommodationName,
-        accommodationAddress: result.accommodationAddress,
-        // Carry the human-readable headline forward so the last-scan
-        // card can show an explicit reason for amber ("Manifested —
-        // Not Assigned") and red, not just a tag. Suppressed on green
-        // when we already have the hotel info — otherwise the card
-        // would render the hotel name twice.
-        reasonText:
-          result.status === "green" && result.accommodationName
-            ? undefined
-            : decision.title,
-        at: now,
-      });
-      setCounts((c) => ({ ...c, [result.status]: c[result.status] + 1 }));
+        const decision = classifyHajjCheck(result, t as (k: string) => string);
+        if (result.reason === "lookup_degraded" && decision.flash === "yellow") {
+          decision.hint = t("rapidAmberDegradedHint");
+        }
+        // Sticky flash for the fallback path too.
+        trigger(
+          {
+            color: decision.flash,
+            title: decision.title,
+            subtitle: decision.subtitle,
+            hint: decision.hint,
+          },
+          decision.hapticKey,
+          0,
+        );
+        setCounts((c) => ({ ...c, [result.status]: c[result.status] + 1 }));
 
-      if (result.status === "green" || result.status === "amber") {
-        // Greens/ambers are persisted as COLLECTED_FROM_BELT events.
-        // The flight selector is optional in Rapid Scan, so we send
-        // empty groupId/flightId when the supervisor hasn't pinned a
-        // flight — `submitScan` translates those to `null` on the
-        // wire so the server can derive the manifest from the tag.
-        await queue.enqueue({
-          tagNumber: result.bagTag,
-          groupId: flight?.id ?? "",
-          flightId: flight?.id ?? "",
-          scannedAt: new Date(now).toISOString(),
-          source: isZebra ? "zebra" : "camera",
-          deviceId: deviceIdRef.current ?? undefined,
-        });
-      } else {
-        // Red scans never enter the regular queue — fire-and-forget log
-        // to the dedicated red-scan endpoint. Best-effort: a network
-        // failure or 404 is non-blocking.
-        sgsApi
-          .logRedScan({
+        if (result.status === "green" || result.status === "amber") {
+          // Tag wasn't in our cached manifest, so we don't know the
+          // groupId locally. Omit it — `submitScan` translates an
+          // absent groupId to `null` on the wire, which lets the
+          // server resolve the correct group from the bag tag itself
+          // rather than coercing flight.id into a wrong-group id.
+          await queue.enqueue({
             tagNumber: result.bagTag,
-            reason: result.reason ?? "unknown_tag",
-            flightId: flight?.id,
-          })
-          .catch(() => undefined);
-      }
+            flightId: flight.id,
+            scannedAt: new Date(now).toISOString(),
+            source: isZebra ? "zebra" : "camera",
+            deviceId: deviceIdRef.current ?? undefined,
+          });
+        } else {
+          sgsApi
+            .logRedScan({
+              tagNumber: result.bagTag,
+              reason: result.reason ?? "unknown_tag",
+              flightId: flight.id,
+            })
+            .catch(() => undefined);
+        }
       } finally {
-        // Guarantee the busy flag clears even if `queue.enqueue` throws
-        // unexpectedly — without this, a single network blip would
-        // freeze the screen until remount.
         setBusy(false);
       }
     },
-    [busy, flight, isZebra, queue, t, trigger],
+    [
+      busy,
+      flight,
+      groupAccommodation,
+      isZebra,
+      manifestReady,
+      mergedManifest,
+      queue,
+      t,
+      trigger,
+    ],
   );
 
-  useZebraScanner(handleScan);
+  // Only subscribe to the Zebra trigger when a flight + manifest are
+  // ready — the empty state shouldn't accept scans.
+  useZebraScanner(manifestReady ? handleScan : noopScanHandler);
 
   const [cameraActive, setCameraActive] = useState(true);
   useFocusEffect(
@@ -276,12 +433,21 @@ export default function RapidScanScreen() {
 
   // Defense in depth — the route guard in `_layout.tsx` already blocks
   // ineligible roles, but the screen also short-circuits so a stale
-  // render between guard and redirect can't leak the camera or fire a
-  // hajj-check on behalf of a non-supervisor.
+  // render between guard and redirect can't leak the camera.
   const role = auth.user?.role ?? "";
   const canRapidScan =
     role === "admin" || role === "duty_manager" || role === "airport_ops";
   if (!auth.user || !canRapidScan) return null;
+
+  // Switching flights resets the running counters and clears the
+  // sticky result panel back to the empty state.
+  const onPickFlight = (next: Flight | null) => {
+    setFlight(next);
+    setCounts({ green: 0, amber: 0, red: 0 });
+    clearFlash();
+    lastScan.current = null;
+    setPickerOpen(false);
+  };
 
   return (
     <View style={styles.flex}>
@@ -315,14 +481,12 @@ export default function RapidScanScreen() {
           <Text style={[styles.flightChipText, isRTL && { writingDirection: "rtl" }]}>
             {flight ? flight.flightNumber : t("pickFlight")}
           </Text>
-          {flight ? (
-            <Pressable onPress={() => setFlight(null)} hitSlop={10}>
-              <Feather name="x" size={14} color={colors.sgs.textMuted} />
-            </Pressable>
-          ) : null}
         </Pressable>
         <Pressable
-          onPress={() => setCounts({ green: 0, amber: 0, red: 0 })}
+          onPress={() => {
+            setCounts({ green: 0, amber: 0, red: 0 });
+            clearFlash();
+          }}
           style={({ pressed }) => [styles.clearBtn, pressed && { opacity: 0.7 }]}
         >
           <Feather name="rotate-ccw" size={14} color={colors.sgs.textMuted} />
@@ -337,8 +501,19 @@ export default function RapidScanScreen() {
       </View>
 
       <View style={styles.body}>
-        {isZebra ? (
-          <ZebraIdleView last={last} />
+        {!flight ? (
+          <PickFlightEmpty
+            onPick={() => {
+              setPickerOpen(true);
+              if (flights.length === 0) loadFlights();
+            }}
+          />
+        ) : manifestLoading ? (
+          <ManifestLoadingView />
+        ) : manifestError ? (
+          <ManifestErrorView onRetry={() => groupsQ.refetch()} />
+        ) : !manifestReady ? null : isZebra ? (
+          <ZebraIdleView totalManifestSize={totalManifestSize} />
         ) : permission?.granted ? (
           cameraActive ? (
             <CameraView
@@ -356,7 +531,7 @@ export default function RapidScanScreen() {
           />
         )}
 
-        {!isZebra && permission?.granted ? (
+        {flight && manifestReady && !isZebra && permission?.granted ? (
           <View pointerEvents="none" style={styles.reticle}>
             <View style={styles.reticleBox} />
             <Text style={[styles.reticleHint, isRTL && { writingDirection: "rtl" }]}>
@@ -381,9 +556,7 @@ export default function RapidScanScreen() {
         ) : null}
       </View>
 
-      <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]}>
-        <LastScanCard last={last} />
-      </View>
+      <View style={[styles.footer, { paddingBottom: insets.bottom + 12 }]} />
 
       <Modal
         visible={pickerOpen}
@@ -406,29 +579,9 @@ export default function RapidScanScreen() {
                   <View style={{ height: 1, backgroundColor: colors.sgs.border }} />
                 )}
                 style={{ maxHeight: 360 }}
-                ListHeaderComponent={
-                  <Pressable
-                    onPress={() => {
-                      setFlight(null);
-                      setPickerOpen(false);
-                    }}
-                    style={({ pressed }) => [
-                      styles.flightRow,
-                      pressed && { backgroundColor: colors.sgs.surfaceElevated },
-                    ]}
-                  >
-                    <Text style={styles.flightRowTitle}>{t("noFlight")}</Text>
-                    <Text style={styles.flightRowSub}>
-                      {t("rapidScanNoFlightHint")}
-                    </Text>
-                  </Pressable>
-                }
                 renderItem={({ item }) => (
                   <Pressable
-                    onPress={() => {
-                      setFlight(item);
-                      setPickerOpen(false);
-                    }}
+                    onPress={() => onPickFlight(item)}
                     style={({ pressed }) => [
                       styles.flightRow,
                       pressed && { backgroundColor: colors.sgs.surfaceElevated },
@@ -453,6 +606,12 @@ export default function RapidScanScreen() {
   );
 }
 
+// Stable no-op so the Zebra hook doesn't re-subscribe on every render
+// when the flight isn't pinned.
+function noopScanHandler() {
+  /* gated until a flight is selected */
+}
+
 function CountTile({
   color,
   label,
@@ -470,7 +629,52 @@ function CountTile({
   );
 }
 
-function ZebraIdleView({ last }: { last: LastScan | null }) {
+function PickFlightEmpty({ onPick }: { onPick: () => void }) {
+  const { t, isRTL } = useLocale();
+  return (
+    <View style={styles.emptyWrap}>
+      <Feather name="navigation" size={48} color={colors.sgs.textMuted} />
+      <Text style={[styles.emptyTitle, isRTL && { writingDirection: "rtl" }]}>
+        {t("rapidScanPickFlightTitle")}
+      </Text>
+      <Text style={[styles.emptyBody, isRTL && { writingDirection: "rtl" }]}>
+        {t("rapidScanPickFlightBody")}
+      </Text>
+      <PrimaryButton label={t("rapidScanPickFlightCta")} onPress={onPick} />
+    </View>
+  );
+}
+
+function ManifestLoadingView() {
+  const { t, isRTL } = useLocale();
+  return (
+    <View style={styles.emptyWrap}>
+      <ActivityIndicator color={colors.sgs.green} size="large" />
+      <Text style={[styles.emptyBody, isRTL && { writingDirection: "rtl" }]}>
+        {t("rapidScanLoadingManifest")}
+      </Text>
+    </View>
+  );
+}
+
+function ManifestErrorView({ onRetry }: { onRetry: () => void }) {
+  const { t, isRTL } = useLocale();
+  return (
+    <View style={styles.emptyWrap}>
+      <Feather name="alert-triangle" size={40} color={colors.sgs.flashRed} />
+      <Text style={[styles.emptyBody, isRTL && { writingDirection: "rtl" }]}>
+        {t("rapidScanManifestError")}
+      </Text>
+      <PrimaryButton label={t("retry")} onPress={onRetry} />
+    </View>
+  );
+}
+
+function ZebraIdleView({
+  totalManifestSize,
+}: {
+  totalManifestSize: number;
+}) {
   const { t } = useLocale();
   return (
     <View style={styles.zebraWrap}>
@@ -480,11 +684,11 @@ function ZebraIdleView({ last }: { last: LastScan | null }) {
         color={colors.sgs.green}
         style={{ opacity: 0.85 }}
       />
-      <Text style={styles.zebraTitle}>
-        {last ? last.tag : t("rapidScanIdle")}
-      </Text>
+      <Text style={styles.zebraTitle}>{t("rapidScanIdle")}</Text>
       <Text style={styles.zebraSub}>
-        {last ? t("lastScannedTag") : t("zebraIdleSub")}
+        {totalManifestSize > 0
+          ? `${totalManifestSize} ${t("bags")}`
+          : t("zebraIdleSub")}
       </Text>
     </View>
   );
@@ -514,59 +718,6 @@ function CameraPermissionView({
           />
         </>
       )}
-    </View>
-  );
-}
-
-function LastScanCard({ last }: { last: LastScan | null }) {
-  const { t, isRTL } = useLocale();
-  if (!last) {
-    return (
-      <Text style={[styles.lastEmpty, isRTL && { writingDirection: "rtl" }]}>
-        {t("rapidScanIdle")}
-      </Text>
-    );
-  }
-  const accent =
-    last.status === "green"
-      ? colors.sgs.flashGreen
-      : last.status === "amber"
-        ? colors.sgs.flashAmber
-        : colors.sgs.flashRed;
-  return (
-    <View style={[styles.lastCard, { borderLeftColor: accent }]}>
-      <Text style={[styles.lastLabel, isRTL && { writingDirection: "rtl" }]}>
-        {t("lastScan")}
-      </Text>
-      <Text style={[styles.lastTag, isRTL && { writingDirection: "rtl" }]}>
-        {last.tag}
-      </Text>
-      {last.pilgrimName ? (
-        <Text style={[styles.lastLine, isRTL && { writingDirection: "rtl" }]}>
-          {t("pilgrim")}: {last.pilgrimName}
-        </Text>
-      ) : null}
-      {last.accommodationName ? (
-        <Text style={[styles.lastLine, isRTL && { writingDirection: "rtl" }]}>
-          {t("hotel")}: {last.accommodationName}
-        </Text>
-      ) : null}
-      {last.accommodationAddress ? (
-        <Text style={[styles.lastSub, isRTL && { writingDirection: "rtl" }]}>
-          {last.accommodationAddress}
-        </Text>
-      ) : null}
-      {last.reasonText ? (
-        <Text
-          style={[
-            styles.lastLine,
-            { color: accent, fontFamily: FONTS.bodyMedium },
-            isRTL && { writingDirection: "rtl" },
-          ]}
-        >
-          {last.reasonText}
-        </Text>
-      ) : null}
     </View>
   );
 }
@@ -705,49 +856,29 @@ const styles = StyleSheet.create({
     fontSize: 14,
     textAlign: "center",
   },
+  emptyWrap: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 14,
+    paddingHorizontal: 32,
+  },
+  emptyTitle: {
+    color: colors.sgs.textPrimary,
+    fontFamily: FONTS.bodyBold,
+    fontSize: 22,
+    textAlign: "center",
+  },
+  emptyBody: {
+    color: colors.sgs.textMuted,
+    fontFamily: FONTS.body,
+    fontSize: 14,
+    textAlign: "center",
+  },
   footer: {
     backgroundColor: colors.sgs.black,
     borderTopWidth: 1,
     borderTopColor: colors.sgs.border,
-    paddingHorizontal: 16,
-    paddingTop: 12,
-  },
-  lastEmpty: {
-    color: colors.sgs.textMuted,
-    fontFamily: FONTS.body,
-    fontSize: 13,
-    textAlign: "center",
-    paddingVertical: 12,
-  },
-  lastCard: {
-    backgroundColor: colors.sgs.surface,
-    borderLeftWidth: 4,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderRadius: 8,
-    gap: 4,
-  },
-  lastLabel: {
-    color: colors.sgs.textMuted,
-    fontFamily: FONTS.body,
-    fontSize: 11,
-    letterSpacing: 0.5,
-    textTransform: "uppercase",
-  },
-  lastTag: {
-    color: colors.sgs.textPrimary,
-    fontFamily: FONTS.bodyBold,
-    fontSize: 18,
-  },
-  lastLine: {
-    color: colors.sgs.textPrimary,
-    fontFamily: FONTS.body,
-    fontSize: 13,
-  },
-  lastSub: {
-    color: colors.sgs.textMuted,
-    fontFamily: FONTS.body,
-    fontSize: 12,
   },
   modalOverlay: {
     flex: 1,

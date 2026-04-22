@@ -1,5 +1,5 @@
 import * as Haptics from "expo-haptics";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 
 import { FLASH_DURATIONS, type FlashColor } from "@/constants/branding";
@@ -53,6 +53,14 @@ export interface FlashState {
 
 export function useFlashFeedback() {
   const [flash, setFlash] = useState<FlashState | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelTimer = useCallback(() => {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+  }, []);
 
   const trigger = useCallback(
     (
@@ -61,18 +69,41 @@ export function useFlashFeedback() {
       /**
        * Optional explicit on-screen duration in milliseconds. When
        * omitted the per-color default from `FLASH_DURATIONS` is used.
-       * Rapid Scan passes 1500ms for every color so green / amber / red
-       * dwell long enough to be read in a noisy hall.
+       *
+       * Pass `0` (or any non-positive value) to make the flash
+       * **sticky** — it stays mounted until either the next `trigger`
+       * replaces its content or `clearFlash` is called. Used by Rapid
+       * Scan so a supervisor reading from across the belt isn't racing
+       * a 1.5 s timer; the haptic + sound still fire on the existing
+       * rhythm because they're decoupled from the visual dwell.
        */
       durationMs?: number,
     ) => {
       fire(haptic);
+      // Always cancel any previously-pending fade so a sticky flash
+      // can't be wiped out by an earlier fixed-duration timer that
+      // hadn't fired yet.
+      cancelTimer();
       setFlash(state);
       const ms = durationMs ?? FLASH_DURATIONS[state.color];
-      setTimeout(() => setFlash(null), ms);
+      if (ms > 0) {
+        timerRef.current = setTimeout(() => {
+          timerRef.current = null;
+          setFlash(null);
+        }, ms);
+      }
     },
-    [],
+    [cancelTimer],
   );
 
-  return { flash, trigger };
+  const clearFlash = useCallback(() => {
+    cancelTimer();
+    setFlash(null);
+  }, [cancelTimer]);
+
+  // Hygiene: clear any pending timer on unmount so a slow fade can't
+  // call setFlash on a torn-down component.
+  useEffect(() => cancelTimer, [cancelTimer]);
+
+  return { flash, trigger, clearFlash };
 }
