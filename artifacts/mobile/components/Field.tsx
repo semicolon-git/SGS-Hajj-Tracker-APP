@@ -17,6 +17,7 @@ export function Field({
   error,
   rightElement,
   isRTL = false,
+  style: callerStyle,
   ...rest
 }: TextInputProps & { label: string; error?: string; rightElement?: React.ReactNode; isRTL?: boolean }) {
   return (
@@ -27,6 +28,7 @@ export function Field({
           placeholderTextColor={colors.sgs.textDim}
           textAlign={isRTL ? "right" : "left"}
           textBreakStrategy="simple"
+          {...rest}
           style={[
             styles.input,
             rightElement
@@ -35,8 +37,8 @@ export function Field({
                 : styles.inputWithRight
               : null,
             error ? { borderColor: colors.sgs.flashRed } : null,
+            callerStyle,
           ]}
-          {...rest}
         />
         {rightElement ? (
           <View style={isRTL ? styles.leftEl : styles.rightEl}>{rightElement}</View>

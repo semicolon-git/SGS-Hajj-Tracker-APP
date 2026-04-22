@@ -605,11 +605,15 @@ export default function ScanScreen() {
               });
             }}
           />
+          {/* No Tag entry point hidden per client request (2026-04-22).
+              Re-enable by restoring the FooterButton below. The /no-tag
+              route, screen, and queue handling all remain intact.
           <FooterButton
             icon="edit-3"
             label={t("noTag")}
             onPress={() => router.push("/no-tag")}
           />
+          */}
           <FooterButton
             icon="refresh-cw"
             label={t("syncNow")}
@@ -658,6 +662,20 @@ function GroupCardsStrip({
   onBulkReceive: (g: BagGroup) => void;
   t: (k: StringKeyT) => string;
 }) {
+  // Collapsed by default to keep the scanner viewfinder dominant. Reset
+  // to collapsed every time the screen regains focus so coming back from
+  // a sub-screen (exception/settings/etc.) starts the agent in the
+  // distraction-free state. The summary row pulses when a green scan
+  // lands while collapsed so the agent still gets visual confirmation
+  // that the totals updated.
+  const [expanded, setExpanded] = useState(false);
+  useFocusEffect(
+    useCallback(() => {
+      setExpanded(false);
+      return undefined;
+    }, []),
+  );
+
   if (loading && groups.length === 0) {
     return (
       <View style={cardStripStyles.skeletonRow}>
@@ -675,28 +693,75 @@ function GroupCardsStrip({
       </View>
     );
   }
-  // Vertical 2-column grid above the camera/Zebra view. Height-capped
-  // so the scanner viewfinder below stays visible; the grid scrolls
-  // internally when the flight has many groups.
+
+  const totalScanned = groups.reduce(
+    (s, g) => s + g.scannedBags + (scanDelta[g.id] ?? 0),
+    0,
+  );
+  const totalExpected = groups.reduce((s, g) => s + g.expectedBags, 0);
+  const pct = totalExpected
+    ? Math.min(100, Math.round((totalScanned / totalExpected) * 100))
+    : 0;
+
+  // Pulse the summary row itself when collapsed so the agent still sees
+  // a heartbeat for each green scan without needing the cards visible.
+  const summaryPulseStyle =
+    !expanded && pulseGroupId
+      ? {
+          opacity: pulseAnim.interpolate({
+            inputRange: [0, 0.5, 1],
+            outputRange: [0.55, 1, 1],
+          }),
+        }
+      : null;
+
   return (
-    <ScrollView
-      showsVerticalScrollIndicator={false}
-      contentContainerStyle={cardStripStyles.grid}
-      style={cardStripStyles.strip}
-    >
-      {groups.map((g) => (
-        <GroupCard
-          key={g.id}
-          group={g}
-          delta={scanDelta[g.id] ?? 0}
-          pulse={pulseGroupId === g.id}
-          pulseAnim={pulseAnim}
-          showBulkReceive={showBulkReceive}
-          onBulkReceive={() => onBulkReceive(g)}
-          t={t}
-        />
-      ))}
-    </ScrollView>
+    <View style={cardStripStyles.collapsibleWrap}>
+      <Pressable
+        onPress={() => setExpanded((v) => !v)}
+        accessibilityRole="button"
+        accessibilityLabel={
+          expanded ? t("collapseGroups") : t("expandGroups")
+        }
+        style={({ pressed }) => [pressed && { opacity: 0.7 }]}
+      >
+        <Animated.View
+          style={[cardStripStyles.summaryRow, summaryPulseStyle]}
+        >
+          <Feather name="grid" size={13} color={colors.sgs.textMuted} />
+          <Text style={cardStripStyles.summaryTxt}>
+            {t("groups")} ({groups.length}) · {totalScanned}/{totalExpected}
+            {totalExpected ? ` · ${pct}%` : ""}
+          </Text>
+          <View style={cardStripStyles.summarySpacer} />
+          <Feather
+            name={expanded ? "chevron-up" : "chevron-down"}
+            size={16}
+            color={colors.sgs.textMuted}
+          />
+        </Animated.View>
+      </Pressable>
+      {expanded ? (
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={cardStripStyles.grid}
+          style={cardStripStyles.strip}
+        >
+          {groups.map((g) => (
+            <GroupCard
+              key={g.id}
+              group={g}
+              delta={scanDelta[g.id] ?? 0}
+              pulse={pulseGroupId === g.id}
+              pulseAnim={pulseAnim}
+              showBulkReceive={showBulkReceive}
+              onBulkReceive={() => onBulkReceive(g)}
+              t={t}
+            />
+          ))}
+        </ScrollView>
+      ) : null}
+    </View>
   );
 }
 
@@ -789,6 +854,10 @@ function GroupCard({
           ]}
         />
       </View>
+      {/* Bulk Receive entry point hidden per client request
+          (2026-04-22). Re-enable by uncommenting the Pressable below.
+          The /bulk-receive route, screen, and queue handling all remain
+          intact, and the `showBulkReceive` prop chain is preserved.
       {showBulkReceive && status === "PENDING" ? (
         <Pressable
           onPress={onBulkReceive}
@@ -803,16 +872,34 @@ function GroupCard({
           <Text style={cardStripStyles.bulkBtnTxt}>{t("bulkReceive")}</Text>
         </Pressable>
       ) : null}
+      */}
     </Animated.View>
   );
 }
 
 const cardStripStyles = StyleSheet.create({
-  strip: {
-    maxHeight: 280,
+  collapsibleWrap: {
     backgroundColor: colors.sgs.surface,
     borderBottomColor: colors.sgs.border,
     borderBottomWidth: 1,
+  },
+  summaryRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  summaryTxt: {
+    color: colors.sgs.textPrimary,
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 13,
+    letterSpacing: 0.2,
+  },
+  summarySpacer: { flex: 1 },
+  strip: {
+    maxHeight: 280,
+    backgroundColor: colors.sgs.surface,
   },
   grid: {
     paddingHorizontal: 12,
