@@ -4,6 +4,7 @@ import { StyleSheet, Text, View } from "react-native";
 
 import colors from "@/constants/colors";
 import { FONTS } from "@/constants/branding";
+import { useLocale } from "@/contexts/LocaleContext";
 
 export function StatusPill({
   online,
@@ -14,6 +15,7 @@ export function StatusPill({
   queueSize: number;
   syncing: boolean;
 }) {
+  const { t } = useLocale();
   // Connection state and queue depth are now two independent signals so
   // the agent always sees the link status, even when something is
   // pending. Colour stays semantic: green = online, red = offline,
@@ -25,7 +27,7 @@ export function StatusPill({
     <View style={styles.row}>
       <View style={[styles.wrap, { borderColor: connectionColor }]}>
         <View style={[styles.dot, { backgroundColor: connectionColor }]} />
-        <Text style={styles.txt}>{online ? "Online" : "Offline"}</Text>
+        <Text style={styles.txt}>{online ? t("online") : t("offline")}</Text>
         {syncing ? (
           <Feather name="refresh-cw" size={11} color={colors.sgs.textPrimary} />
         ) : null}
