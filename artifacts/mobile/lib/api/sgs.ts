@@ -549,12 +549,27 @@ function uuidv4(): string {
 
 // ---------- Rapid-Scan / Hajj-check shapes ----------
 //
-// The live `/api/bags/hajj-check` endpoint returns a discriminator plus a
-// scattering of optional fields. Different builds have shipped slightly
-// different shapes (matched/hasAccommodation flags vs explicit status), so
-// the wire type is intentionally permissive and `normalizeHajjCheck` does
-// the folding.
+// The live `/api/bags/hajj-check` endpoint has shipped THREE distinct
+// payload shapes over time. The wire type stays intentionally
+// permissive and `normalizeHajjCheck` folds whichever shape arrived
+// down to the single client-facing `HajjCheckResult`:
+//
+//   1. Original  — `{ status, bagTag, pilgrimName, accommodationName, ... }`
+//   2. Interim   — `{ matched, hasAccommodation, bagTag, pilgrimName, ... }`
+//   3. Current (Apr 2026, verified live) — nests bag/pilgrim under
+//      sub-objects and replaces the status flags with `isHajj` +
+//      `resultCode` + `canCollectFromBelt`. Top-level
+//      `accommodationName` / `accommodationAddress` / `companyName` /
+//      `city` are real fields on this shape, so we keep reading those
+//      at the top level.
+//
+// All three shapes are accepted simultaneously so a backend rollback
+// (or a partial rollout) doesn't break the field. The new shape's
+// nested objects are typed inline rather than imported from
+// `ServerBag` to keep the surface defensive — we only read the few
+// fields we actually need and tolerate everything else being missing.
 export type RawHajjCheck = {
+  // ---- shape 1 + 2 ----
   status?: string;
   result?: string;
   matched?: boolean;
@@ -563,6 +578,25 @@ export type RawHajjCheck = {
   tag?: string;
   pilgrimName?: string | null;
   passengerName?: string | null;
+  // ---- shape 3 (current) ----
+  isHajj?: boolean | null;
+  resultCode?: string | null;
+  reasonCode?: string | null;
+  canCollectFromBelt?: boolean | null;
+  bag?: {
+    bagTag?: string | null;
+    isHajjBag?: boolean | null;
+    flightId?: string | null;
+    flightGroupId?: string | null;
+    currentStatus?: string | null;
+  } | null;
+  pilgrim?: {
+    name?: string | null;
+    nusukType?: string | null;
+    nationality?: string | null;
+    accommodationId?: string | null;
+  } | null;
+  // ---- common to all shapes ----
   accommodationName?: string | null;
   hotelName?: string | null;
   accommodationAddress?: string | null;
@@ -603,8 +637,17 @@ function normalizeHajjCheck(
   scannedTag: string,
   raw: RawHajjCheck,
 ): HajjCheckResult {
-  const bagTag = String(raw.bagTag ?? raw.tag ?? scannedTag);
-  const pilgrimName = cleanField(raw.pilgrimName ?? raw.passengerName);
+  // Field extraction — read each piece of data from wherever the
+  // server happened to put it. Top-level legacy fields win when
+  // present (so a backend rollback to shape 1/2 still works); only
+  // fall back to the new nested locations when the legacy field is
+  // missing. This makes the adapter rollout-safe in either direction.
+  const bagTag = String(
+    raw.bagTag ?? raw.tag ?? raw.bag?.bagTag ?? scannedTag,
+  );
+  const pilgrimName = cleanField(
+    raw.pilgrimName ?? raw.passengerName ?? raw.pilgrim?.name,
+  );
   const accommodationName = cleanField(raw.accommodationName ?? raw.hotelName);
   const accommodationAddress = cleanField(
     raw.accommodationAddress ?? raw.hotelAddress,
@@ -612,13 +655,61 @@ function normalizeHajjCheck(
   const companyName = cleanField(raw.companyName);
   const city = cleanField(raw.city);
   const reason = raw.reason ?? raw.message;
+
+  // Status derivation — a layered set of rules so older payloads keep
+  // working and the new payload classifies correctly:
+  //
+  //   a) Highest priority: an explicit `status` / `result` field
+  //      ("green" | "amber" | "red"). Original shape #1.
+  //   b) `matched === false` from shape #2 → red.
+  //   c) New shape #3 signals — `canCollectFromBelt` + accommodation +
+  //      `isHajj`/nusukType. Derive the status the way the supervisor
+  //      reads the screen: if the server says the bag can be
+  //      collected, it's at minimum AMBER (Hajj manifest match without
+  //      hotel) or GREEN (with hotel). If the server explicitly says
+  //      not Hajj and we have nothing else to go on, it's RED.
+  //   d) Final fallback: the original shape #2 derivation off
+  //      hasAccommodation / accommodationName.
   const explicit = (raw.status ?? raw.result ?? "").toLowerCase();
   let status: HajjCheckResult["status"];
   if (explicit === "green" || explicit === "amber" || explicit === "red") {
     status = explicit as HajjCheckResult["status"];
   } else if (raw.matched === false) {
     status = "red";
+  } else if (
+    // New shape signal: server told us whether the bag is collectable.
+    typeof raw.canCollectFromBelt === "boolean" ||
+    typeof raw.isHajj === "boolean" ||
+    raw.bag != null ||
+    raw.pilgrim != null
+  ) {
+    // We're definitely on shape #3.
+    const nusukIsHajj =
+      typeof raw.pilgrim?.nusukType === "string" &&
+      raw.pilgrim.nusukType.toUpperCase() === "HAJJ";
+    // Trust `isHajj` when the server set it true. When it's set false
+    // BUT the pilgrim's nusukType says HAJJ (a known backend
+    // inconsistency reported via task-58 backend asks), prefer the
+    // pilgrim signal — refusing a bag with a real Hajj nusuk record
+    // would block legitimate collections at the belt. When `isHajj`
+    // is missing entirely, fall back to nusukType / accommodation
+    // presence as evidence the bag is on the manifest at all.
+    const treatAsHajj =
+      raw.isHajj === true ||
+      nusukIsHajj ||
+      (raw.isHajj == null && (!!accommodationName || !!pilgrimName));
+    if (raw.canCollectFromBelt === false && !treatAsHajj) {
+      status = "red";
+    } else if (!treatAsHajj) {
+      // Server says not Hajj and there's no nusuk evidence → red.
+      status = "red";
+    } else if (accommodationName) {
+      status = "green";
+    } else {
+      status = "amber";
+    }
   } else if (raw.hasAccommodation === false || !accommodationName) {
+    // Original shape #2 derivation.
     status = raw.matched === true || pilgrimName ? "amber" : "red";
   } else {
     status = "green";
