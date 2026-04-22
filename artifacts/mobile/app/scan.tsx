@@ -59,6 +59,13 @@ function statusForGroup(g: BagGroup): "PENDING" | "IN_PROGRESS" | "COMPLETE" {
 
 const DEBOUNCE_MS = 1500;
 const DEBOUNCE_RED_MS = 2000;
+// Receiving-screen result hold. Per duty-manager feedback the flash
+// panel needs to dwell long enough for an agent reading from across
+// the cart to register colour + tag/pilgrim before the next scan
+// fires. Overrides the per-colour `FLASH_DURATIONS` defaults at the
+// callsite so other screens (Rapid Scan, Bulk Receive) keep their
+// own dwell tuning.
+const RECEIVING_FLASH_MS = 3000;
 
 /**
  * Render an ISO timestamp as a short, locale-friendly time-of-day string
@@ -385,6 +392,7 @@ export default function ScanScreen() {
             hint: t("manifestErrorBody"),
           },
           "error",
+          RECEIVING_FLASH_MS,
         );
         return;
       }
@@ -422,12 +430,63 @@ export default function ScanScreen() {
       // merged manifest already encodes group membership, so any tag
       // present in `flatManifest` is by definition in the right group
       // for this flight.
-      const decision = decideScan({
+      let decision = decideScan({
         tagNumber: tag,
         groupId: undefined,
         manifest: flatManifest,
         scannedTags,
       });
+      // Group id we'll credit on a green hit. Starts as the cached
+      // manifest match; the same-flight rescue below promotes it to
+      // the server-resolved group when we manage to look up an
+      // off-manifest bag.
+      let acceptGroupId = matchedGroupId;
+      // Pilgrim name for the subtitle when we resolve a bag via the
+      // rescue path (cached manifest already has it on the bag).
+      let rescuedPilgrim: string | undefined;
+
+      // ---- Same-flight rescue ----------------------------------------
+      // Per the duty-manager feedback: at receiving the only condition
+      // for accepting a bag is that it belongs to this flight. If the
+      // tag wasn't in the cached manifest but the SGS server confirms
+      // it on this flight, treat it as a green COLLECTED and credit
+      // the bag's real group automatically. A bag belonging to a
+      // different flight (or a tag the server can't resolve at all)
+      // keeps the existing red NOT IN MANIFEST behaviour.
+      if (decision.title === "NOT IN MANIFEST" && queue.online) {
+        const rescued = await sgsApi.findBagByTag(tag, {
+          flightId: sFlightId,
+        });
+        if (
+          rescued &&
+          rescued.flightId === sFlightId &&
+          rescued.flightGroupId
+        ) {
+          const rescuedGroupId = rescued.flightGroupId;
+          acceptGroupId = rescuedGroupId;
+          rescuedPilgrim = rescued.pilgrimName;
+          // Re-check duplicate against the rescued group's scanned set
+          // — without this an agent re-scanning a rescued bag would
+          // get a misleading second green/COLLECTED.
+          const rescuedScanned = await getScannedTags(rescuedGroupId);
+          if (rescuedScanned.has(tag)) {
+            decision = {
+              flash: "amber",
+              title: "Already Scanned",
+              subtitle: tag,
+              hapticKey: "duplicate",
+            };
+          } else {
+            decision = {
+              flash: "green",
+              title: "COLLECTED",
+              subtitle: rescued.pilgrimName ?? tag,
+              hapticKey: "success",
+            };
+          }
+        }
+      }
+      // ----------------------------------------------------------------
 
       lastScan.current = { tag, at: now, flash: decision.flash };
 
@@ -438,24 +497,27 @@ export default function ScanScreen() {
       const title = offlineQueued ? "QUEUED OFFLINE" : decision.title;
 
       const isNotInManifest = decision.title === "NOT IN MANIFEST";
-      const subtitle = isNotInManifest ? tag : decision.subtitle;
+      const subtitle = isNotInManifest
+        ? tag
+        : decision.subtitle ?? rescuedPilgrim;
       const hint = isNotInManifest ? t("notInManifestHint") : undefined;
 
       trigger(
         { color: flashColor, title, subtitle, hint },
         decision.hapticKey,
+        RECEIVING_FLASH_MS,
       );
       setLastTag(tag);
       if (decision.flash === "red") setLastFailedTag(tag);
 
-      if (decision.flash === "green" && matchedGroupId) {
-        await markTagScanned(matchedGroupId, tag);
+      if (decision.flash === "green" && acceptGroupId) {
+        await markTagScanned(acceptGroupId, tag);
         setScanDelta((prev) => ({
           ...prev,
-          [matchedGroupId]: (prev[matchedGroupId] ?? 0) + 1,
+          [acceptGroupId]: (prev[acceptGroupId] ?? 0) + 1,
         }));
         // Pulse the matching card so the agent sees which group ticked.
-        setPulseGroupId(matchedGroupId);
+        setPulseGroupId(acceptGroupId);
         pulseAnim.setValue(0);
         Animated.timing(pulseAnim, {
           toValue: 1,
@@ -478,7 +540,7 @@ export default function ScanScreen() {
       await queue.enqueue({
         tagNumber: tag,
         // Omit when unmatched — server resolves the group at sync time.
-        groupId: matchedGroupId ?? undefined,
+        groupId: acceptGroupId ?? undefined,
         flightId: sFlightId,
         scannedAt: new Date(now).toISOString(),
         source: isZebra ? "zebra" : "camera",
