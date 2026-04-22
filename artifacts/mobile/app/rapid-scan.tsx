@@ -306,9 +306,17 @@ export default function RapidScanScreen() {
           // companyName/city into the cached record before rendering.
           // Helper short-circuits when offline or when both fields
           // are already populated, so the common case stays free.
-          const cached = await enrichCachedBagWithHajjCheck(tag, rawCached, {
-            online: queue.online,
-          });
+          // Use the cached record's canonical bagTag rather than the
+          // raw scan token — `mergedManifest` matches both the SGS
+          // bag tag and the airline IATA alias, but `/hajj-check`
+          // expects the canonical SGS tag, so passing `tag` directly
+          // would miss enrichment whenever the agent scans the IATA
+          // sticker.
+          const cached = await enrichCachedBagWithHajjCheck(
+            rawCached.tagNumber,
+            rawCached,
+            { online: queue.online },
+          );
           const isHajj = cached.isHajjBag !== false;
           const accommodation = groupAccommodation.get(cached.groupId);
           let status: "green" | "amber" | "red";
