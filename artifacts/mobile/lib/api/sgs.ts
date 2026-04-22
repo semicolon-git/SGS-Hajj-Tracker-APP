@@ -636,6 +636,50 @@ function normalizeHajjCheck(
   };
 }
 
+/**
+ * Race a `hajjCheck` lookup for `tagNumber` against a short timeout
+ * and return the cached `ManifestBag` enriched with `companyName` /
+ * `city` from the live response when available. Used by Rapid Scan
+ * to close the gap where `/api/bags?groupId=…` doesn't surface those
+ * two fields but `/api/bags/hajj-check` does — without a backend
+ * change, the cached green/amber flash would otherwise miss them.
+ *
+ * Returns the cached bag unmodified when:
+ *   - `online` is false (no point trying);
+ *   - both fields are already present on the cache (zero-latency path);
+ *   - the lookup times out, throws, or comes back red/unknown.
+ *
+ * Cached fields always win when present — the live lookup only fills
+ * in what's missing, so a manually-corrected cached value can't be
+ * stomped by stale server data.
+ */
+export async function enrichCachedBagWithHajjCheck(
+  tagNumber: string,
+  cached: ManifestBag,
+  opts: { online: boolean; timeoutMs?: number },
+): Promise<ManifestBag> {
+  if (!opts.online) return cached;
+  if (cached.companyName && cached.city) return cached;
+  const timeoutMs = opts.timeoutMs ?? 700;
+  try {
+    const raced = await Promise.race<HajjCheckResult | "__timeout__">([
+      sgsApi.hajjCheck(tagNumber),
+      new Promise<"__timeout__">((resolve) =>
+        setTimeout(() => resolve("__timeout__"), timeoutMs),
+      ),
+    ]);
+    if (raced === "__timeout__") return cached;
+    if (raced.status === "red") return cached;
+    return {
+      ...cached,
+      companyName: cached.companyName ?? raced.companyName,
+      city: cached.city ?? raced.city,
+    };
+  } catch {
+    return cached;
+  }
+}
+
 export const sgsApi = {
   login: async (username: string, password: string): Promise<LoginResponse> => {
     const body = await request<ServerLoginBody>("/api/auth/login", {

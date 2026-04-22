@@ -37,6 +37,7 @@ import {
   getOrCreateDeviceId,
 } from "@/lib/db/storage";
 import {
+  enrichCachedBagWithHajjCheck,
   sgsApi,
   type BagGroup,
   type Flight,
@@ -289,13 +290,25 @@ export default function RapidScanScreen() {
       setBusy(true);
       try {
         // ---------- Local-first resolution ----------
-        const cached = mergedManifest.get(tag);
-        if (cached) {
+        const rawCached = mergedManifest.get(tag);
+        if (rawCached) {
           // A match against the flight's cached manifest. The bag is
           // by construction on a manifested Hajj flight; treat
           // `isHajjBag === false` as the only explicit way to flip
           // it red (older API builds omit the field, in which case
           // we trust the manifest).
+          //
+          // The live `/api/bags?groupId=…` endpoint that feeds the
+          // cached manifest doesn't currently surface companyName /
+          // city, while `/api/bags/hajj-check` does. To keep the
+          // green/amber flash consistent across paths we race a
+          // hajj-check call against a short timeout and fold its
+          // companyName/city into the cached record before rendering.
+          // Helper short-circuits when offline or when both fields
+          // are already populated, so the common case stays free.
+          const cached = await enrichCachedBagWithHajjCheck(tag, rawCached, {
+            online: queue.online,
+          });
           const isHajj = cached.isHajjBag !== false;
           const accommodation = groupAccommodation.get(cached.groupId);
           let status: "green" | "amber" | "red";
