@@ -16,6 +16,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { ScreenHeader } from "@/components/ScreenHeader";
+import { WhatsNewSheet } from "@/components/WhatsNewSheet";
 import { FONTS } from "@/constants/branding";
 import colors from "@/constants/colors";
 import { useLocale } from "@/contexts/LocaleContext";
@@ -47,6 +48,7 @@ export default function SettingsScreen() {
   const { phase, error, check, apply } = useOtaUpdater();
 
   const [copied, setCopied] = useState(false);
+  const [showWhatsNew, setShowWhatsNew] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [rawScanOn, setRawScanOn] = useState(false);
 
@@ -183,6 +185,21 @@ export default function SettingsScreen() {
           </Text>
           {error ? <Text style={styles.errorLine}>{error}</Text> : null}
           <Text style={styles.metaLine}>{buildLabel}</Text>
+
+          <Pressable
+            onPress={() => setShowWhatsNew(true)}
+            accessibilityRole="button"
+            accessibilityLabel={t("whatsNewSettingsLink")}
+            style={({ pressed }) => [
+              styles.whatsNewLink,
+              pressed && { opacity: 0.7 },
+            ]}
+          >
+            <Feather name="gift" size={14} color={colors.sgs.green} />
+            <Text style={styles.whatsNewLinkTxt}>
+              {t("whatsNewSettingsLink")}
+            </Text>
+          </Pressable>
         </View>
 
         <Text style={styles.sectionLabel}>App version</Text>
@@ -312,6 +329,9 @@ export default function SettingsScreen() {
           ) : null}
         </View>
       </ScrollView>
+      {showWhatsNew ? (
+        <WhatsNewSheet forceShow onClose={() => setShowWhatsNew(false)} />
+      ) : null}
     </View>
   );
 }
@@ -532,6 +552,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: colors.sgs.textDim,
     marginTop: 4,
+  },
+  whatsNewLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 4,
+  },
+  whatsNewLinkTxt: {
+    color: colors.sgs.green,
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 13,
+    textDecorationLine: "underline",
   },
   sectionLabel: {
     fontFamily: FONTS.bodyMedium,

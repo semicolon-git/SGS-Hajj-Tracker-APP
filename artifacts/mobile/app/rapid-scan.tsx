@@ -33,6 +33,7 @@ import {
   getCachedFlights,
   getCachedGroups,
   getCachedManifest,
+  getLastSync,
   getOrCreateDeviceId,
 } from "@/lib/db/storage";
 import {
@@ -45,6 +46,29 @@ import {
 import { classifyHajjCheck, normalizeTag } from "@/lib/scanLogic";
 
 const DEBOUNCE_MS = 1500;
+
+/** Same logic as scan.tsx's formatCachedAt — kept local to avoid forcing
+ * a shared util just for two callsites. Renders a same-day timestamp as
+ * HH:MM and prior-day timestamps as relative ("Xh ago"). */
+function formatRapidCachedAt(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+  const minutes = Math.max(1, Math.floor((now.getTime() - d.getTime()) / 60_000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 type Counts = { green: number; amber: number; red: number };
 
@@ -119,17 +143,17 @@ export default function RapidScanScreen() {
       try {
         const fresh = await sgsApi.groups(flightId as string);
         await cacheGroups(flightId as string, fresh);
-        return fresh;
+        return { groups: fresh, fromCache: false };
       } catch {
         const cached = await getCachedGroups<BagGroup[]>(flightId as string);
-        if (cached.data) return cached.data;
+        if (cached.data) return { groups: cached.data, fromCache: true };
         throw new Error("groups_unavailable");
       }
     },
     enabled: !!flightId,
     staleTime: 60_000,
   });
-  const groups = groupsQ.data ?? [];
+  const groups = groupsQ.data?.groups ?? [];
 
   const manifestQs = useQueries({
     queries: groups.map((g) => ({
@@ -138,13 +162,16 @@ export default function RapidScanScreen() {
         try {
           const fresh = await sgsApi.manifest(g.id);
           await cacheManifest(g.id, fresh);
-          return fresh;
+          return { bags: fresh, fromCache: false, cachedAt: null as string | null };
         } catch (err) {
           // Offline fallback. Rethrow if the cache is also empty so
           // the screen surfaces a retry instead of running with a
           // partial manifest.
           const cached = await getCachedManifest(g.id);
-          if (cached) return cached;
+          if (cached) {
+            const cachedAt = await getLastSync(g.id);
+            return { bags: cached, fromCache: true, cachedAt };
+          }
           throw err;
         }
       },
@@ -161,7 +188,7 @@ export default function RapidScanScreen() {
   const mergedManifest = useMemo(() => {
     const out = new Map<string, ManifestBag>();
     manifestQs.forEach((q) => {
-      for (const bag of q.data ?? []) {
+      for (const bag of q.data?.bags ?? []) {
         out.set(bag.tagNumber, bag);
         if (bag.iataTag) out.set(bag.iataTag, bag);
       }
@@ -169,6 +196,24 @@ export default function RapidScanScreen() {
     return out;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [manifestQs.map((q) => q.dataUpdatedAt).join("|")]);
+
+  // ---------------------------------------------------------------
+  // Stale-cache surface (mirrors `app/scan.tsx`). Hard failures still
+  // route to <ManifestErrorView/>; `manifestStale` only fires when the
+  // live fetch failed but cached data carried us through.
+  // ---------------------------------------------------------------
+  const groupsFromCache = groupsQ.data?.fromCache ?? false;
+  const staleManifestQs = manifestQs.filter((q) => q.data?.fromCache);
+  const oldestCachedAt = useMemo(() => {
+    const stamps: string[] = [];
+    for (const q of staleManifestQs) {
+      if (q.data?.cachedAt) stamps.push(q.data.cachedAt);
+    }
+    if (!stamps.length) return null;
+    stamps.sort();
+    return stamps[0] ?? null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staleManifestQs.length, staleManifestQs.map((q) => q.data?.cachedAt).join("|")]);
 
   // groupId → accommodationName. Uses ONLY the explicit field, never
   // the `groupNumber` display fallback — otherwise the amber bucket
@@ -511,6 +556,29 @@ export default function RapidScanScreen() {
         <CountTile color={colors.sgs.flashRed} label={t("reds")} value={counts.red} />
       </View>
 
+      {manifestReady && (groupsFromCache || staleManifestQs.length > 0) ? (
+        <View style={styles.staleBanner}>
+          <Feather name="cloud-off" size={14} color={colors.sgs.black} />
+          <Text style={[styles.staleText, isRTL && { writingDirection: "rtl" }]}>
+            <Text style={styles.staleTitle}>{t("manifestStaleTitle")}</Text>
+            {oldestCachedAt
+              ? ` · ${t("manifestStaleBody").replace("{time}", formatRapidCachedAt(oldestCachedAt))}`
+              : ""}
+          </Text>
+          <Pressable
+            onPress={() => {
+              groupsQ.refetch();
+              manifestQs.forEach((q) => q.refetch());
+            }}
+            style={styles.staleRetry}
+            accessibilityRole="button"
+            accessibilityLabel={t("retry")}
+          >
+            <Text style={styles.staleRetryTxt}>{t("retry")}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       <View style={styles.body}>
         {!flight ? (
           <PickFlightEmpty
@@ -803,6 +871,33 @@ const styles = StyleSheet.create({
     marginTop: 2,
     letterSpacing: 0.5,
     textTransform: "uppercase",
+  },
+  staleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.sgs.flashAmber,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  staleText: {
+    flex: 1,
+    color: colors.sgs.black,
+    fontFamily: FONTS.body,
+    fontSize: 12,
+  },
+  staleTitle: {
+    fontFamily: FONTS.bodyBold,
+  },
+  staleRetry: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  staleRetryTxt: {
+    color: colors.sgs.black,
+    fontFamily: FONTS.bodyBold,
+    fontSize: 11,
+    textDecorationLine: "underline",
   },
   reticle: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
   reticleBox: {

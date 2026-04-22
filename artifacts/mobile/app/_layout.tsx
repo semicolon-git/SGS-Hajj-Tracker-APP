@@ -21,6 +21,7 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import { BiometricLockGate } from "@/components/BiometricLockGate";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { OtaUpdateGate } from "@/components/OtaUpdateGate";
+import { WhatsNewSheet } from "@/components/WhatsNewSheet";
 import colors from "@/constants/colors";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { LocaleProvider, useLocale } from "@/contexts/LocaleContext";
@@ -139,6 +140,7 @@ export default function RootLayout() {
                         <OtaUpdateGate>
                           <BiometricLockGate>
                             <RootStack />
+                            <WhatsNewSheet />
                           </BiometricLockGate>
                         </OtaUpdateGate>
                       </View>

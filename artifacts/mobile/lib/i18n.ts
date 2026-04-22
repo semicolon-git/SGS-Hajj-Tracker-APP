@@ -184,12 +184,29 @@ const en = {
   reconfigureFailed: "Couldn't reconfigure the scanner.",
 
   // Scan screen · trigger health
-  noScansYet: "No scans received yet",
+  noScansYet: "Trigger not detected",
   noScansYetBody:
-    "If pulling the trigger does nothing, open Settings → Diagnostics and tap Reconfigure scanner.",
+    "Your Zebra setup may be incomplete. Open the setup guide to walk through the fix.",
+  noDataWedgeTitle: "DataWedge isn't installed",
+  noDataWedgeBody:
+    "BagScan needs the Zebra DataWedge app to receive trigger pulls. Install it, then run setup.",
+  openSetupGuide: "Open setup guide",
   openSettingsAction: "Open Settings",
+  dismiss: "Dismiss",
 
-  notInManifestHint: "This bag is not registered in this group.\nUse Exception if the bag is physically present.",
+  notInManifestHint: "This bag isn't on this flight's manifest.\nUse Exception if the bag is physically present.",
+
+  // Manifest load failure / stale-cache banners
+  manifestErrorTitle: "Couldn't load manifest",
+  manifestErrorBody:
+    "Scan results may be unreliable. Tap Retry, or sign out and try a different device.",
+  manifestStaleTitle: "Using cached manifest",
+  manifestStaleBody: "Last updated {time} — pull to refresh.",
+
+  // What's new
+  whatsNewTitle: "What's new in v{version}",
+  whatsNewCta: "Got it",
+  whatsNewSettingsLink: "What's new in this version",
 
   // Rapid Scan
   rapidScan: "Rapid Scan",
@@ -396,12 +413,27 @@ const ar: Dict = {
     "DataWedge غير مثبت على هذا الجهاز، لذا لا شيء لإعادة ضبطه.",
   reconfigureFailed: "تعذّرت إعادة ضبط الماسح.",
 
-  noScansYet: "لم يتم استلام أي مسح بعد",
+  noScansYet: "لم يتم رصد ضغط الزر",
   noScansYetBody:
-    "إذا لم يحدث شيء عند ضغط الزر، افتح الإعدادات ← التشخيص واضغط إعادة ضبط الماسح.",
+    "قد يكون إعداد جهاز Zebra غير مكتمل. افتح دليل الإعداد لتنفيذ الخطوات.",
+  noDataWedgeTitle: "DataWedge غير مثبّت",
+  noDataWedgeBody:
+    "يحتاج BagScan إلى تطبيق Zebra DataWedge لاستقبال ضغطات الزر. ثبّته ثم نفّذ الإعداد.",
+  openSetupGuide: "فتح دليل الإعداد",
   openSettingsAction: "فتح الإعدادات",
+  dismiss: "إخفاء",
 
-  notInManifestHint: "هذه الحقيبة غير مسجلة في هذه المجموعة.\nاستخدم الاستثناء إذا كانت الحقيبة موجودة فعلياً.",
+  notInManifestHint: "هذه الحقيبة غير مدرجة في قائمة هذه الرحلة.\nاستخدم الاستثناء إذا كانت الحقيبة موجودة فعلياً.",
+
+  manifestErrorTitle: "تعذّر تحميل قائمة الحقائب",
+  manifestErrorBody:
+    "قد تكون نتائج المسح غير موثوقة. اضغط إعادة المحاولة، أو سجّل الخروج وجرّب جهازاً آخر.",
+  manifestStaleTitle: "يتم استخدام نسخة محفوظة",
+  manifestStaleBody: "آخر تحديث {time} — اسحب للتحديث.",
+
+  whatsNewTitle: "الجديد في الإصدار {version}",
+  whatsNewCta: "حسناً",
+  whatsNewSettingsLink: "الجديد في هذا الإصدار",
 
   rapidScan: "المسح السريع",
   rapidScanSub: "مسح متواصل بدون تشتيت",

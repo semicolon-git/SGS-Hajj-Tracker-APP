@@ -28,13 +28,21 @@ import { useLocale } from "@/contexts/LocaleContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
 import { useSession } from "@/contexts/SessionContext";
 import { useFlashFeedback } from "@/hooks/useFlashFeedback";
-import { useScannerMode, useZebraScanRaw, useZebraScanner } from "@/hooks/useScanner";
+import {
+  isDataWedgeAvailable,
+  useScannerMode,
+  useZebraScanRaw,
+  useZebraScanner,
+} from "@/hooks/useScanner";
 import { decideScan, normalizeTag, parseBtpPdf417 } from "@/lib/scanLogic";
 import { sgsApi, type BagGroup, type ManifestBag } from "@/lib/api/sgs";
 import {
+  cacheGroups,
   cacheManifest,
+  getCachedGroups,
   getCachedManifest,
   getDebugRawScan,
+  getLastSync,
   getOrCreateDeviceId,
   getScannedTags,
   markTagScanned,
@@ -51,6 +59,32 @@ function statusForGroup(g: BagGroup): "PENDING" | "IN_PROGRESS" | "COMPLETE" {
 
 const DEBOUNCE_MS = 1500;
 const DEBOUNCE_RED_MS = 2000;
+
+/**
+ * Render an ISO timestamp as a short, locale-friendly time-of-day string
+ * (e.g. "14:32") for the stale-manifest banner. Falls back to a relative
+ * "Xm ago" if the cached timestamp is from a different calendar day so an
+ * agent reopening the app the next morning sees how stale the cache is.
+ */
+function formatCachedAt(iso: string): string {
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return iso;
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  if (sameDay) {
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+  const minutes = Math.max(1, Math.floor((now.getTime() - d.getTime()) / 60_000));
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
 
 export default function ScanScreen() {
   const router = useRouter();
@@ -93,6 +127,17 @@ export default function ScanScreen() {
   const [zebraFocusedAt, setZebraFocusedAt] = useState<number | null>(null);
   const [lastZebraScanAt, setLastZebraScanAt] = useState<number | null>(null);
   const [tickNow, setTickNow] = useState<number>(() => Date.now());
+  // DataWedge presence probe: when the native bridge reports the package
+  // isn't installed at all, surface the trigger-health banner immediately
+  // (no 30s wait) with a clearer subtitle. Re-checked on every focus so
+  // sideloading DataWedge mid-shift recovers the moment the screen comes
+  // back. `null` while we wait for the first probe to resolve.
+  const [dataWedgeMissing, setDataWedgeMissing] = useState<boolean | null>(null);
+  // Per-session dismiss for the trigger-health banner. The agent can hide
+  // it after acknowledging — no point in nagging during slow belt
+  // periods. Resets on screen blur so reopening the scan screen surfaces
+  // it again if the device is still misconfigured.
+  const [triggerBannerDismissed, setTriggerBannerDismissed] = useState(false);
   // Tracks the last tag that produced a red flash (unknown / wrong-group /
   // duplicate). Used as the prefill source when the agent taps "Exception"
   // so the form is seeded with the tag that actually needs an exception
@@ -111,15 +156,29 @@ export default function ScanScreen() {
   }, []);
 
   // Live group list for the active flight. Powers the cards grid and the
-  // flight-level totals shown in the header.
+  // flight-level totals shown in the header. Falls back to the disk cache
+  // when the network call fails so a flaky link doesn't blank the screen,
+  // and tracks `fromCache` so the manifest banner can warn the operator
+  // they're working off stale data.
   const flightId = session.session?.flight.id ?? null;
   const groupsQ = useQuery({
     queryKey: ["groups", flightId],
-    queryFn: () => sgsApi.groups(flightId as string),
+    queryFn: async () => {
+      const fid = flightId as string;
+      try {
+        const fresh = await sgsApi.groups(fid);
+        await cacheGroups(fid, fresh);
+        return { groups: fresh, fromCache: false };
+      } catch (err) {
+        const cached = await getCachedGroups<BagGroup[]>(fid);
+        if (cached.data) return { groups: cached.data, fromCache: true };
+        throw err;
+      }
+    },
     enabled: !!flightId,
     staleTime: 30_000,
   });
-  const groups = groupsQ.data ?? [];
+  const groups = groupsQ.data?.groups ?? [];
 
   // Reset optimistic per-group deltas every time the server's `groups`
   // payload refreshes — the new `scannedBags` already incorporates any
@@ -141,10 +200,17 @@ export default function ScanScreen() {
         try {
           const fresh = await sgsApi.manifest(g.id);
           await cacheManifest(g.id, fresh);
-          return fresh;
-        } catch {
+          return { bags: fresh, fromCache: false, cachedAt: null as string | null };
+        } catch (err) {
           const cached = await getCachedManifest(g.id);
-          return cached ?? [];
+          if (cached) {
+            const cachedAt = await getLastSync(g.id);
+            return { bags: cached, fromCache: true, cachedAt };
+          }
+          // No cache to fall back to — surface as a hard failure so the
+          // banner appears instead of letting the scanner accept tags
+          // against an empty manifest (which flashes red on every scan).
+          throw err;
         }
       },
       enabled: !!flightId,
@@ -160,13 +226,52 @@ export default function ScanScreen() {
   const mergedManifest = useMemo(() => {
     const out = new Map<string, ManifestBag>();
     manifestQs.forEach((q) => {
-      for (const bag of q.data ?? []) {
+      for (const bag of q.data?.bags ?? []) {
         out.set(bag.tagNumber, bag);
         if (bag.iataTag) out.set(bag.iataTag, bag);
       }
     });
     return out;
   }, [manifestQs]);
+
+  // ---------------------------------------------------------------
+  // Manifest health (drives the load-failure / stale-cache banners).
+  //   - manifestErrorHard : the live fetch failed AND no usable cache
+  //     exists for at least one source (groups or any per-group
+  //     manifest). Operator must retry or change device.
+  //   - manifestStale    : at least one source fell back to cached
+  //     data successfully. Scans still work but the operator should
+  //     know they're on stale data.
+  //   - oldestCachedAt   : earliest cache timestamp across stale
+  //     sources, used to render a single "last updated" string.
+  // ---------------------------------------------------------------
+  const manifestErrorHard =
+    !!flightId && (groupsQ.isError || manifestQs.some((q) => q.isError));
+  const groupsFromCache = groupsQ.data?.fromCache ?? false;
+  const staleManifestQs = manifestQs.filter((q) => q.data?.fromCache);
+  const manifestStale =
+    !!flightId &&
+    !manifestErrorHard &&
+    (groupsFromCache || staleManifestQs.length > 0);
+  const oldestCachedAt = useMemo(() => {
+    if (!manifestStale) return null;
+    const stamps: string[] = [];
+    for (const q of staleManifestQs) {
+      if (q.data?.cachedAt) stamps.push(q.data.cachedAt);
+    }
+    if (!stamps.length) return null;
+    stamps.sort();
+    return stamps[0] ?? null;
+  }, [manifestStale, staleManifestQs]);
+
+  // Refetch every manifest query unconditionally on Retry — both
+  // hard-failure and stale-cache states need a fresh network attempt,
+  // and stale queries report `isSuccess` (not `isError`), so a guard
+  // on `isError` would silently no-op the stale-banner Retry button.
+  const retryManifest = useCallback(() => {
+    groupsQ.refetch();
+    manifestQs.forEach((q) => q.refetch());
+  }, [groupsQ, manifestQs]);
 
   // Flight-level totals shown in the header. Server-authoritative
   // `scannedBags` from the groups query, plus any local deltas that
@@ -242,10 +347,19 @@ export default function ScanScreen() {
       setZebraFocusedAt(Date.now());
       setLastZebraScanAt(null);
       setTickNow(Date.now());
+      setTriggerBannerDismissed(false);
+      // Probe DataWedge presence on every focus — if it isn't installed,
+      // we want to show the banner immediately rather than waiting 30s.
+      let cancelled = false;
+      isDataWedgeAvailable().then((ok) => {
+        if (!cancelled) setDataWedgeMissing(!ok);
+      });
       const interval = setInterval(() => setTickNow(Date.now()), 1000);
       return () => {
+        cancelled = true;
         clearInterval(interval);
         setZebraFocusedAt(null);
+        setDataWedgeMissing(null);
       };
     }, [isZebra]),
   );
@@ -256,6 +370,24 @@ export default function ScanScreen() {
       const sFlightId = session.session.flight.id;
       const tag = normalizeTag(raw);
       if (!tag) return;
+      // Manifest hard-failure guard. Without a usable manifest every
+      // scan would resolve to NOT IN MANIFEST and quietly enqueue
+      // against an empty group set. Block the scan and flash so the
+      // agent realises the banner above isn't optional — they need to
+      // Retry (or change device) before the trigger does anything
+      // useful. Mirrors `rapid-scan.tsx`'s `manifestReady` gate.
+      if (manifestErrorHard) {
+        trigger(
+          {
+            color: "red",
+            title: t("manifestErrorTitle"),
+            subtitle: tag,
+            hint: t("manifestErrorBody"),
+          },
+          "error",
+        );
+        return;
+      }
       const now = Date.now();
       const debounceWindow =
         lastScan.current?.flash === "red" ? DEBOUNCE_RED_MS : DEBOUNCE_MS;
@@ -353,7 +485,7 @@ export default function ScanScreen() {
         deviceId: deviceIdRef.current ?? undefined,
       });
     },
-    [isZebra, queue, session.session, trigger, mergedManifest, pulseAnim, queryClient, t],
+    [isZebra, queue, session.session, trigger, mergedManifest, pulseAnim, queryClient, t, manifestErrorHard],
     // queue.online is captured via closure each render; safe.
   );
 
@@ -364,11 +496,23 @@ export default function ScanScreen() {
   // scan events received. Once any scan event lands the ribbon hides
   // permanently for this session — we don't want to nag during slow
   // belt periods.
-  const showNoScansWarning =
+  // Two triggers for the "your scanner isn't reaching us" banner:
+  //   1. DataWedge isn't installed at all → show immediately on focus.
+  //   2. DataWedge is present but no scan event has arrived in 30s →
+  //      treat as a misconfigured profile / dead trigger.
+  // Either way the agent gets one actionable banner with a Setup Guide
+  // CTA and a Dismiss escape hatch.
+  const triggerTimedOut =
     isZebra &&
     lastZebraScanAt === null &&
     zebraFocusedAt !== null &&
     tickNow - zebraFocusedAt > 30_000;
+  const showNoScansWarning =
+    isZebra &&
+    !triggerBannerDismissed &&
+    (dataWedgeMissing === true || triggerTimedOut);
+  const triggerBannerKind: "missing" | "timeout" =
+    dataWedgeMissing === true ? "missing" : "timeout";
 
   const [cameraActive, setCameraActive] = useState(true);
   useFocusEffect(
@@ -458,21 +602,75 @@ export default function ScanScreen() {
         </View>
       ) : null}
 
+      {manifestErrorHard ? (
+        <View style={styles.manifestErrorBanner}>
+          <Feather name="alert-octagon" size={16} color="#FFF" />
+          <View style={styles.noScanText}>
+            <Text style={[styles.manifestErrorTitle, isRTL && { writingDirection: "rtl" }]}>
+              {t("manifestErrorTitle")}
+            </Text>
+            <Text style={[styles.manifestErrorBody, isRTL && { writingDirection: "rtl" }]}>
+              {t("manifestErrorBody")}
+            </Text>
+          </View>
+          <Pressable
+            onPress={retryManifest}
+            style={styles.manifestRetryBtn}
+            accessibilityRole="button"
+            accessibilityLabel={t("retry")}
+          >
+            <Text style={styles.manifestRetryBtnTxt}>{t("retry")}</Text>
+          </Pressable>
+        </View>
+      ) : manifestStale ? (
+        <View style={styles.manifestStaleBanner}>
+          <Feather name="cloud-off" size={14} color={colors.sgs.black} />
+          <Text style={[styles.manifestStaleText, isRTL && { writingDirection: "rtl" }]}>
+            <Text style={styles.manifestStaleTitle}>{t("manifestStaleTitle")}</Text>
+            {oldestCachedAt
+              ? ` · ${t("manifestStaleBody").replace("{time}", formatCachedAt(oldestCachedAt))}`
+              : ""}
+          </Text>
+          <Pressable
+            onPress={retryManifest}
+            style={styles.manifestStaleRetry}
+            accessibilityRole="button"
+            accessibilityLabel={t("retry")}
+          >
+            <Text style={styles.manifestStaleRetryTxt}>{t("retry")}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
       {showNoScansWarning ? (
         <View style={styles.noScanBanner}>
           <Feather name="alert-triangle" size={16} color={colors.sgs.black} />
           <View style={styles.noScanText}>
-            <Text style={[styles.noScanTitle, isRTL && { writingDirection: "rtl" }]}>{t("noScansYet")}</Text>
-            <Text style={[styles.noScanBody, isRTL && { writingDirection: "rtl" }]}>{t("noScansYetBody")}</Text>
+            <Text style={[styles.noScanTitle, isRTL && { writingDirection: "rtl" }]}>
+              {triggerBannerKind === "missing" ? t("noDataWedgeTitle") : t("noScansYet")}
+            </Text>
+            <Text style={[styles.noScanBody, isRTL && { writingDirection: "rtl" }]}>
+              {triggerBannerKind === "missing" ? t("noDataWedgeBody") : t("noScansYetBody")}
+            </Text>
           </View>
-          <Pressable
-            onPress={() => router.push("/settings")}
-            style={styles.noScanBtn}
-            accessibilityRole="button"
-            accessibilityLabel={t("openSettingsAction")}
-          >
-            <Text style={styles.noScanBtnTxt}>{t("openSettingsAction")}</Text>
-          </Pressable>
+          <View style={styles.noScanActions}>
+            <Pressable
+              onPress={() => router.push("/settings")}
+              style={styles.noScanBtn}
+              accessibilityRole="button"
+              accessibilityLabel={t("openSetupGuide")}
+            >
+              <Text style={styles.noScanBtnTxt}>{t("openSetupGuide")}</Text>
+            </Pressable>
+            <Pressable
+              onPress={() => setTriggerBannerDismissed(true)}
+              style={styles.noScanDismissBtn}
+              accessibilityRole="button"
+              accessibilityLabel={t("dismiss")}
+            >
+              <Text style={styles.noScanDismissBtnTxt}>{t("dismiss")}</Text>
+            </Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -1164,6 +1362,79 @@ const styles = StyleSheet.create({
     color: colors.sgs.textPrimary,
     fontFamily: FONTS.bodyBold,
     fontSize: 11,
+  },
+  noScanActions: {
+    alignItems: "flex-end",
+    gap: 6,
+  },
+  noScanDismissBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
+  noScanDismissBtnTxt: {
+    color: colors.sgs.black,
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 11,
+    textDecorationLine: "underline",
+  },
+  manifestErrorBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: colors.sgs.flashRed,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  manifestErrorTitle: {
+    color: "#FFF",
+    fontFamily: FONTS.bodyBold,
+    fontSize: 13,
+  },
+  manifestErrorBody: {
+    color: "#FFF",
+    fontFamily: FONTS.body,
+    fontSize: 11,
+    lineHeight: 15,
+    marginTop: 1,
+    opacity: 0.95,
+  },
+  manifestRetryBtn: {
+    backgroundColor: "#FFF",
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 6,
+  },
+  manifestRetryBtnTxt: {
+    color: colors.sgs.flashRed,
+    fontFamily: FONTS.bodyBold,
+    fontSize: 11,
+  },
+  manifestStaleBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.sgs.flashAmber,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  manifestStaleText: {
+    flex: 1,
+    color: colors.sgs.black,
+    fontFamily: FONTS.body,
+    fontSize: 12,
+  },
+  manifestStaleTitle: {
+    fontFamily: FONTS.bodyBold,
+  },
+  manifestStaleRetry: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  manifestStaleRetryTxt: {
+    color: colors.sgs.black,
+    fontFamily: FONTS.bodyBold,
+    fontSize: 11,
+    textDecorationLine: "underline",
   },
   opsBanner: {
     flexDirection: "row",

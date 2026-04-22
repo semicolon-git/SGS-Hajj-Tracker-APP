@@ -39,6 +39,10 @@ const KEYS = {
   // when an agent is on a Zebra device but the trigger is busted, or
   // when QA needs to test the camera path on a TC57.
   scannerMode: "sgs:scannerMode",
+  // Tracks the most recent app version whose "What's new" sheet the
+  // agent has dismissed. When the value differs from the current
+  // running version, the sheet is shown once on next launch.
+  lastSeenWhatsNew: "sgs:lastSeenWhatsNew",
 };
 
 export const STORAGE_KEYS = KEYS;
@@ -135,6 +139,34 @@ export async function setScannerMode(mode: ScannerMode): Promise<void> {
     await AsyncStorage.setItem(KEYS.scannerMode, mode);
   } catch {
     // best-effort — UI already updated optimistically
+  }
+}
+
+// ---------- "What's new" tracker ----------
+
+/**
+ * Returns the version string of the last "What's new" sheet the user
+ * dismissed, or `null` if they've never dismissed one (fresh install,
+ * first launch, or storage error).
+ */
+export async function getLastSeenWhatsNewVersion(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem(KEYS.lastSeenWhatsNew);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist that the user has dismissed the "What's new" sheet for the
+ * given version. Best-effort: failures are swallowed so the UI never
+ * gets stuck on a write error.
+ */
+export async function setLastSeenWhatsNewVersion(version: string): Promise<void> {
+  try {
+    await AsyncStorage.setItem(KEYS.lastSeenWhatsNew, version);
+  } catch {
+    // best-effort — at worst the sheet shows again on next launch
   }
 }
 
