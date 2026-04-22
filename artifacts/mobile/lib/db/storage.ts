@@ -254,6 +254,39 @@ export async function markTagScanned(groupId: string, tagNumber: string) {
   );
 }
 
+/**
+ * Optimistically flip a cached bag's status without bumping the cache
+ * lastSync timestamp (which would silence the stale-cache banner). Used
+ * after a successful receiving scan so subsequent reads (Rapid Scan,
+ * manifest list) reflect the bag as collected even before the server
+ * round-trip / before the backend transitions MANIFESTED→COLLECTED_FROM_BELT.
+ *
+ * Matches by either the SGS tag or the IATA license-plate alias since
+ * either may have been the value the agent scanned.
+ */
+export async function updateCachedManifestBagStatus(
+  groupId: string,
+  tagNumber: string,
+  status: ManifestBag["status"],
+): Promise<boolean> {
+  const cached = await getCachedManifest(groupId);
+  if (!cached) return false;
+  let changed = false;
+  const next = cached.map((b) => {
+    if (b.tagNumber === tagNumber || b.iataTag === tagNumber) {
+      if (b.status !== status) {
+        changed = true;
+        return { ...b, status };
+      }
+    }
+    return b;
+  });
+  if (changed) {
+    await AsyncStorage.setItem(KEYS.manifest(groupId), JSON.stringify(next));
+  }
+  return changed;
+}
+
 // ---------- Offline scan queue ----------
 
 export interface QueuedScan extends ScanRequest {

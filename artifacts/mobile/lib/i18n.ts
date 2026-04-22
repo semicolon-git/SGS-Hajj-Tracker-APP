@@ -76,8 +76,17 @@ const en = {
   cameraSettings: "Enable camera access in system settings.",
   openSettings: "Open settings",
   scansFailed: "scan(s) failed to upload.",
-  itemsFailed: "scans couldn't be uploaded. Try again or remove?",
+  itemsFailed: "scans need attention. Retry or remove?",
   discard: "Remove",
+  collected: "Collected",
+  noNusukData: "No Nusuk data",
+  allUploadedReturning: "All scans uploaded — returning to flights",
+  exceptionFailedTitle: "Couldn't log exception",
+  exceptionScreenCrashTitle: "Exception screen error",
+  exceptionScreenCrashBody:
+    "Something went wrong on this screen. Try again or go back.",
+  goBack: "Go back",
+  tryAgain: "Try again",
   queuedOffline: "Queued offline — will sync",
   logged: "Logged",
   exceptionLoggedBody: "Exception recorded.",
@@ -239,6 +248,7 @@ const en = {
   rapidScanIdle: "Scan a bag tag to begin",
   rapidScanReds: "Red scans this session",
   rapidScanNoFlightHint: "Scans are not associated with a flight.",
+  rxRedNotInFlight: "Bag not found in this flight",
 
   // Flight-only scan flow (group cards grid)
   switchFlight: "Switch flight",
@@ -467,6 +477,16 @@ const ar: Dict = {
   rapidScanIdle: "امسح بطاقة حقيبة للبدء",
   rapidScanReds: "مسحات حمراء في الجلسة",
   rapidScanNoFlightHint: "المسحات غير مرتبطة برحلة.",
+  rxRedNotInFlight: "الحقيبة غير موجودة في هذه الرحلة",
+  collected: "تم الاستلام",
+  noNusukData: "لا توجد بيانات نُسُك",
+  allUploadedReturning: "تم رفع جميع المسحات — العودة إلى الرحلات",
+  exceptionFailedTitle: "تعذّر تسجيل الاستثناء",
+  exceptionScreenCrashTitle: "خطأ في شاشة الاستثناء",
+  exceptionScreenCrashBody:
+    "حدث خطأ ما في هذه الشاشة. حاول مرة أخرى أو ارجع للخلف.",
+  goBack: "رجوع",
+  tryAgain: "حاول مرة أخرى",
 
   switchFlight: "تغيير الرحلة",
   allGroupsLabel: "المجموعات",

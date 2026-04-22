@@ -85,7 +85,9 @@ type ScanQueueContextValue = {
   enqueueNoTag: (
     payload: Omit<NoTagOpPayload, "placeholderTag">,
   ) => Promise<NoTagEnqueueResult>;
-  syncNow: () => Promise<void>;
+  syncNow: (
+    opts?: { includeDeadLetter?: boolean },
+  ) => Promise<{ pendingRemaining: number; deadLetterRemaining: number }>;
   retryDeadLetter: () => Promise<void>;
   discardDeadLetter: () => Promise<void>;
 };
@@ -146,6 +148,42 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
       cancelled = true;
       clearInterval(id);
     };
+  }, []);
+
+  // Reset attempts on every dead-letter item and merge them back into the
+  // live queues so the next drain takes one more pass at them. Used by
+  // the manual Sync Now action and on app open so a stale "X scans need
+  // attention" banner from a prior session can self-heal once the
+  // network recovers, without silently discarding any user data.
+  const mergeDeadLettersIntoQueues = useCallback(async () => {
+    const [scanDl, exDl, ntDl] = await Promise.all([
+      getDeadLetter(),
+      getOpDeadLetter("exception"),
+      getOpDeadLetter("noTag"),
+    ]);
+    if (scanDl.length === 0 && exDl.length === 0 && ntDl.length === 0) return;
+    const resetItem = <T extends { attempts: number }>(item: T): T =>
+      ({
+        ...item,
+        attempts: 0,
+        nextAttemptAt: undefined,
+        lastError: undefined,
+      }) as T;
+    if (scanDl.length > 0) {
+      const queue = await getQueue();
+      await setQueue([...queue, ...scanDl.map(resetItem)]);
+      await AsyncStorage.removeItem("sgs:scanDeadLetter");
+    }
+    if (exDl.length > 0) {
+      const queue = await getOpQueue("exception");
+      await setOpQueue("exception", [...queue, ...exDl.map(resetItem)]);
+      await clearOpDeadLetter("exception");
+    }
+    if (ntDl.length > 0) {
+      const queue = await getOpQueue("noTag");
+      await setOpQueue("noTag", [...queue, ...ntDl.map(resetItem)]);
+      await clearOpDeadLetter("noTag");
+    }
   }, []);
 
   // Drain the scan queue once. Mirrors the original logic.
@@ -276,57 +314,76 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
     [submitOpOnce],
   );
 
-  const syncNow = useCallback(async () => {
-    if (refreshing.current) return;
-    refreshing.current = true;
-    setSyncing(true);
-    try {
-      // Drain all three queues concurrently. Each targets a separate
-      // storage key, so there is no shared-state race; the SGS backend
-      // is fine with a few concurrent requests at a time.
-      await Promise.all([
-        drainScans(),
-        drainOpsKind("exception"),
-        drainOpsKind("noTag"),
-      ]);
-      await refresh();
-    } finally {
-      setSyncing(false);
-      refreshing.current = false;
-    }
-  }, [drainOpsKind, drainScans, refresh]);
+  const syncNow = useCallback(
+    async (
+      opts?: { includeDeadLetter?: boolean },
+    ): Promise<{ pendingRemaining: number; deadLetterRemaining: number }> => {
+      if (refreshing.current) {
+        return { pendingRemaining: 0, deadLetterRemaining: 0 };
+      }
+      refreshing.current = true;
+      setSyncing(true);
+      try {
+        // When the caller wants the dead letter retried (manual Sync
+        // Now, or app-open recovery), pull DL items into their live
+        // queue with reset attempts BEFORE draining. The drain then
+        // gets one fresh attempt at them; anything that still fails
+        // will hit MAX_ATTEMPTS again and land back in the dead letter.
+        if (opts?.includeDeadLetter) {
+          await mergeDeadLettersIntoQueues();
+        }
+        // Drain all three queues concurrently. Each targets a separate
+        // storage key, so there is no shared-state race; the SGS backend
+        // is fine with a few concurrent requests at a time.
+        await Promise.all([
+          drainScans(),
+          drainOpsKind("exception"),
+          drainOpsKind("noTag"),
+        ]);
+        await refresh();
+        // Read post-drain totals from disk so callers (e.g. the Sync
+        // Now button) can decide to auto-finalize the session without
+        // racing on React state batching.
+        const [q, dl, oqEx, oqNt, odlEx, odlNt] = await Promise.all([
+          getQueue(),
+          getDeadLetter(),
+          getOpQueue("exception"),
+          getOpQueue("noTag"),
+          getOpDeadLetter("exception"),
+          getOpDeadLetter("noTag"),
+        ]);
+        return {
+          pendingRemaining: q.length + oqEx.length + oqNt.length,
+          deadLetterRemaining: dl.length + odlEx.length + odlNt.length,
+        };
+      } finally {
+        setSyncing(false);
+        refreshing.current = false;
+      }
+    },
+    [drainOpsKind, drainScans, mergeDeadLettersIntoQueues, refresh],
+  );
 
   const retryDeadLetter = useCallback(async () => {
-    const [scanDl, exDl, ntDl] = await Promise.all([
-      getDeadLetter(),
-      getOpDeadLetter("exception"),
-      getOpDeadLetter("noTag"),
-    ]);
-    if (scanDl.length === 0 && exDl.length === 0 && ntDl.length === 0) return;
-    const resetItem = <T extends { attempts: number }>(item: T): T => ({
-      ...item,
-      attempts: 0,
-      nextAttemptAt: undefined,
-      lastError: undefined,
-    } as T);
-    if (scanDl.length > 0) {
-      const queue = await getQueue();
-      await setQueue([...queue, ...scanDl.map(resetItem)]);
-      await AsyncStorage.removeItem("sgs:scanDeadLetter");
-    }
-    if (exDl.length > 0) {
-      const queue = await getOpQueue("exception");
-      await setOpQueue("exception", [...queue, ...exDl.map(resetItem)]);
-      await clearOpDeadLetter("exception");
-    }
-    if (ntDl.length > 0) {
-      const queue = await getOpQueue("noTag");
-      await setOpQueue("noTag", [...queue, ...ntDl.map(resetItem)]);
-      await clearOpDeadLetter("noTag");
-    }
+    await mergeDeadLettersIntoQueues();
     await refresh();
     syncNow().catch(() => undefined);
-  }, [refresh, syncNow]);
+  }, [mergeDeadLettersIntoQueues, refresh, syncNow]);
+
+  // App-open self-heal: once we've confirmed network and there's
+  // anything sitting in the dead letter from a prior session, take one
+  // fresh pass at it before the user even taps Sync Now. Items that
+  // succeed disappear from the "X scans need attention" banner; items
+  // that still fail go right back to dead letter as expected. Guarded
+  // by a ref so we only do this once per app launch.
+  const didRecoverDeadLetter = useRef(false);
+  useEffect(() => {
+    if (didRecoverDeadLetter.current) return;
+    if (!online) return;
+    if (deadLetterSize + failedExceptions + failedNoTag === 0) return;
+    didRecoverDeadLetter.current = true;
+    syncNow({ includeDeadLetter: true }).catch(() => undefined);
+  }, [online, deadLetterSize, failedExceptions, failedNoTag, syncNow]);
 
   const discardDeadLetter = useCallback(async () => {
     await Promise.all([

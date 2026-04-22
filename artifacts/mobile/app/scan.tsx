@@ -46,6 +46,7 @@ import {
   getOrCreateDeviceId,
   getScannedTags,
   markTagScanned,
+  updateCachedManifestBagStatus,
 } from "@/lib/db/storage";
 import { Linking } from "react-native";
 
@@ -490,6 +491,30 @@ export default function ScanScreen() {
 
       lastScan.current = { tag, at: now, flash: decision.flash };
 
+      // For green hits, replace the bare "COLLECTED" with a title that
+      // carries the destination accommodation so the agent can confirm
+      // the bag is heading to the right hotel without needing to drill
+      // into the group card. Falls back to "Collected — No Nusuk data"
+      // when the accepting group has no accommodation assigned (those
+      // bags have no nusuk record bound to them yet on the server).
+      if (decision.flash === "green" && acceptGroupId) {
+        const acceptingGroup = groups.find((g) => g.id === acceptGroupId);
+        const accommodation = acceptingGroup?.accommodationName?.trim();
+        decision = {
+          ...decision,
+          title: accommodation
+            ? `${t("collected")} — ${accommodation}`
+            : `${t("collected")} — ${t("noNusukData")}`,
+        };
+      }
+
+      // Localize the receiving red/orange "Bag not found in this flight"
+      // title (set in scanLogic.ts) so Arabic agents see the same
+      // wording the Rapid Scan red title uses (#56).
+      if (decision.title === "Bag not found in this flight") {
+        decision = { ...decision, title: t("rxRedNotInFlight") };
+      }
+
       // When offline, override a green match to yellow to communicate
       // "queued offline — will sync when SGS network returns".
       const offlineQueued = decision.flash === "green" && !queue.online;
@@ -512,6 +537,33 @@ export default function ScanScreen() {
 
       if (decision.flash === "green" && acceptGroupId) {
         await markTagScanned(acceptGroupId, tag);
+        // Optimistically flip the per-bag cached status from pending
+        // to scanned so subsequent reads (Rapid Scan, manifest list)
+        // show the bag as collected even before the next manifest
+        // refetch — and even before the backend ships the
+        // MANIFESTED→COLLECTED_FROM_BELT transition we requested.
+        await updateCachedManifestBagStatus(acceptGroupId, tag, "scanned").catch(
+          () => undefined,
+        );
+        // Mirror the same patch into the React Query in-memory cache so
+        // a screen mounted *after* this scan (e.g. Rapid Scan) reads the
+        // already-scanned status without an AsyncStorage round-trip.
+        queryClient.setQueryData<{
+          bags: ManifestBag[];
+          fromCache: boolean;
+          cachedAt: string | null;
+        }>(["manifest", acceptGroupId], (old) => {
+          if (!old) return old;
+          let mutated = false;
+          const nextBags = old.bags.map((b) => {
+            if ((b.tagNumber === tag || b.iataTag === tag) && b.status !== "scanned") {
+              mutated = true;
+              return { ...b, status: "scanned" as const };
+            }
+            return b;
+          });
+          return mutated ? { ...old, bags: nextBags } : old;
+        });
         setScanDelta((prev) => ({
           ...prev,
           [acceptGroupId]: (prev[acceptGroupId] ?? 0) + 1,
@@ -877,8 +929,32 @@ export default function ScanScreen() {
           <FooterButton
             icon="refresh-cw"
             label={t("syncNow")}
-            onPress={() => queue.syncNow()}
-            disabled={queue.syncing || queue.pendingTotal === 0}
+            onPress={async () => {
+              // Manual Sync Now is the natural end-of-shift action:
+              // include the dead letter (one fresh attempt at any
+              // stuck items) and, when everything drains cleanly,
+              // clear the session and bounce back to flight pick so
+              // the agent doesn't have to also tap End → End shift.
+              const totals = await queue.syncNow({ includeDeadLetter: true });
+              if (
+                totals.pendingRemaining === 0 &&
+                totals.deadLetterRemaining === 0
+              ) {
+                if (Platform.OS === "android") {
+                  ToastAndroid.show(
+                    t("allUploadedReturning"),
+                    ToastAndroid.SHORT,
+                  );
+                }
+                await session.setSession(null);
+                setScanDelta({});
+                router.replace("/session-setup");
+              }
+            }}
+            disabled={
+              queue.syncing ||
+              (queue.pendingTotal === 0 && queue.deadLetterTotal === 0)
+            }
           />
           <FooterButton
             icon="x-circle"

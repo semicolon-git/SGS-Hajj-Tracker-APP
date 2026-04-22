@@ -14,6 +14,8 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ErrorBoundary } from "@/components/ErrorBoundary";
+import type { ErrorFallbackProps } from "@/components/ErrorFallback";
 import { Field } from "@/components/Field";
 import { PrimaryButton } from "@/components/PrimaryButton";
 import { ScreenHeader } from "@/components/ScreenHeader";
@@ -31,7 +33,88 @@ const REASONS = [
   { value: "CUSTOMS_HOLD", label: "Customs hold" },
 ] as const;
 
-export default function ExceptionScreen() {
+/**
+ * Screen-local error boundary fallback. When something on this screen
+ * throws during render (e.g. an unexpected value from the queue
+ * context, a future refactor breaking a hook order, etc.) we no longer
+ * blow up to the global "Something went wrong" page. Instead the agent
+ * sees a contextual message with a Go back button so they can keep
+ * working — the exception itself is logged for the next backend
+ * follow-up.
+ */
+function ExceptionScreenFallback({ error, resetError }: ErrorFallbackProps) {
+  const router = useRouter();
+  const { t } = useLocale();
+  React.useEffect(() => {
+    console.error("[exception] screen render crash", {
+      error: error?.message,
+      stack: error?.stack,
+    });
+  }, [error]);
+  return (
+    <View style={fallbackStyles.container}>
+      <ScreenHeader
+        title="Log Exception"
+        onBack={() => {
+          resetError();
+          router.back();
+        }}
+      />
+      <View style={fallbackStyles.body}>
+        <Text style={fallbackStyles.title}>
+          {/* Falls back to English if the locale key is missing for any reason. */}
+          {t("exceptionScreenCrashTitle") ?? "Exception screen error"}
+        </Text>
+        <Text style={fallbackStyles.message}>
+          {t("exceptionScreenCrashBody") ??
+            "Something went wrong on this screen. Try again or go back."}
+        </Text>
+        {error?.message ? (
+          <Text style={fallbackStyles.errorDetail} selectable>
+            {error.message}
+          </Text>
+        ) : null}
+        <View style={fallbackStyles.actions}>
+          <Pressable
+            onPress={() => {
+              resetError();
+              router.back();
+            }}
+            style={({ pressed }) => [
+              fallbackStyles.btn,
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Text style={fallbackStyles.btnTxt}>
+              {t("goBack") ?? "Go back"}
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={resetError}
+            style={({ pressed }) => [
+              fallbackStyles.btnGhost,
+              pressed && { opacity: 0.85 },
+            ]}
+          >
+            <Text style={fallbackStyles.btnGhostTxt}>
+              {t("tryAgain") ?? "Try again"}
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+export default function ExceptionScreenWithBoundary() {
+  return (
+    <ErrorBoundary FallbackComponent={ExceptionScreenFallback}>
+      <ExceptionScreen />
+    </ErrorBoundary>
+  );
+}
+
+function ExceptionScreen() {
   const router = useRouter();
   const session = useSession();
   const queue = useScanQueue();
@@ -124,6 +207,13 @@ export default function ExceptionScreen() {
       return;
     }
     setBusy(true);
+    const payload = {
+      tagNumber: tag.trim(),
+      groupId: groupId!,
+      flightId: session.session!.flight.id,
+      reason,
+      notes: notes.trim() || undefined,
+    };
     try {
       // Always go through the queue. The queue persists first (durability),
       // then attempts the API call inline when online and resolves with a
@@ -131,13 +221,22 @@ export default function ExceptionScreen() {
       // really accepted it. On failure (timeout, 5xx, offline), the entry
       // remains queued with retry/backoff and we tell the agent it's
       // saved locally and will sync.
-      const result = await queue.enqueueException({
-        tagNumber: tag.trim(),
-        groupId: groupId!,
-        flightId: session.session!.flight.id,
-        reason,
-        notes: notes.trim() || undefined,
-      });
+      const result = await queue.enqueueException(payload);
+      // Defensive: if the queue layer ever returns an unexpected shape
+      // (e.g. an upstream contract drift on /api/bags/exception), don't
+      // crash the screen — surface a clear error and log the actual
+      // value so the next reproduction can be sent to the SGS API team.
+      if (!result || (result.status !== "submitted" && result.status !== "queued")) {
+        console.error("[exception] unexpected enqueue result", {
+          payload,
+          result,
+        });
+        Alert.alert(
+          t("exceptionFailedTitle"),
+          "Unexpected response from server. The error has been logged.",
+        );
+        return;
+      }
       Alert.alert(
         result.status === "submitted" ? t("logged") : t("queuedOffline"),
         result.status === "submitted"
@@ -146,7 +245,23 @@ export default function ExceptionScreen() {
         [{ text: "OK", onPress: () => router.back() }],
       );
     } catch (err) {
-      Alert.alert("Failed", (err as Error).message);
+      // Log the failed payload + raw error so the next reproduction can
+      // be captured from the device log and sent to backend. The
+      // current contract for /api/bags/exception is documented in the
+      // task asks — when this fires in the field, paste the log into
+      // the backend ticket.
+      const e = err as Error;
+      console.error("[exception] submit failed", {
+        payload,
+        error: e?.message,
+        stack: e?.stack,
+      });
+      Alert.alert(
+        t("exceptionFailedTitle"),
+        e?.message
+          ? `${e.message}\n\nThe full request has been written to the device log.`
+          : "Unknown error. The full request has been written to the device log.",
+      );
     } finally {
       setBusy(false);
     }
@@ -274,5 +389,65 @@ const styles = StyleSheet.create({
     color: colors.sgs.textMuted,
     fontFamily: FONTS.body,
     fontSize: 13,
+  },
+});
+
+const fallbackStyles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: colors.sgs.black },
+  body: {
+    flex: 1,
+    paddingHorizontal: 24,
+    paddingTop: 32,
+    gap: 16,
+  },
+  title: {
+    color: colors.sgs.textPrimary,
+    fontFamily: FONTS.bodyBold,
+    fontSize: 20,
+  },
+  message: {
+    color: colors.sgs.textMuted,
+    fontFamily: FONTS.body,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  errorDetail: {
+    color: colors.sgs.textMuted,
+    fontFamily: Platform.select({
+      ios: "Menlo",
+      android: "monospace",
+      default: "monospace",
+    }),
+    fontSize: 12,
+    backgroundColor: colors.sgs.surface,
+    borderColor: colors.sgs.border,
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+  },
+  actions: { flexDirection: "row", gap: 12, marginTop: 8 },
+  btn: {
+    backgroundColor: colors.sgs.green,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+  },
+  btnTxt: {
+    color: colors.sgs.black,
+    fontFamily: FONTS.bodyBold,
+    fontSize: 14,
+  },
+  btnGhost: {
+    backgroundColor: colors.sgs.surface,
+    borderColor: colors.sgs.border,
+    borderWidth: 1,
+    paddingVertical: 14,
+    paddingHorizontal: 20,
+    borderRadius: 10,
+  },
+  btnGhostTxt: {
+    color: colors.sgs.textPrimary,
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 14,
   },
 });

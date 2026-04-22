@@ -35,12 +35,14 @@ export function decideScan(args: {
   // Permissive shape check — anything alphanumeric of plausible bag-tag
   // length is forwarded to the server, which is the source of truth.
   // Things like food-packaging EANs or random short strings still get
-  // an "OUT OF SCOPE" warning so the agent gets immediate feedback that
-  // the camera saw *something* but it wasn't usable.
+  // a "Bag not found in this flight" warning so the agent gets
+  // immediate feedback that the camera saw *something* but it wasn't
+  // usable. Wording mirrors the Rapid Scan red title (#56) so agents
+  // learn one phrase across screens.
   if (!isAcceptedScanTag(tagNumber)) {
     return {
       flash: "orange",
-      title: "OUT OF SCOPE",
+      title: "Bag not found in this flight",
       subtitle: tagNumber,
       hapticKey: "warning",
     };
@@ -242,7 +244,8 @@ export function isIataBagTag(tag: string): boolean {
 /**
  * Live scanner gate: accepts the union of SGS-printed tags and IATA
  * airline license plates. Anything else (food packaging EANs, QR codes,
- * boarding-pass PDF417 payloads, etc.) is "OUT OF SCOPE".
+ * boarding-pass PDF417 payloads, etc.) is rejected with the
+ * "Bag not found in this flight" warning at the call site.
  *
  * The server stays authoritative — this only filters out things that
  * are clearly not a bag tag so the agent gets useful feedback instead
