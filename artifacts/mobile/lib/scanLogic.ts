@@ -258,12 +258,42 @@ export function isAcceptedScanTag(tag: string): boolean {
  * the screen can hand it straight to `useFlashFeedback`. The translator
  * is passed in so the strings stay localized; pass `t` from `useLocale`.
  */
+export interface RapidScanDecisionDetail {
+  label: string;
+  value: string;
+}
+
 export interface RapidScanDecision {
   flash: FlashColor;
   title: string;
   subtitle?: string;
   hint?: string;
+  details?: RapidScanDecisionDetail[];
   hapticKey: HapticKey;
+}
+
+/** Build the labelled rows shown on green/amber Rapid Scan flashes.
+ * Skips any field whose value is missing so the layout collapses
+ * cleanly on partial backend responses (e.g. a "different_flight"
+ * amber where the hotel is unknown). */
+function buildHajjDetails(
+  result: HajjCheckResult,
+  t: (key: string) => string,
+): RapidScanDecisionDetail[] {
+  const rows: RapidScanDecisionDetail[] = [];
+  if (result.accommodationName) {
+    rows.push({ label: t("hotel"), value: result.accommodationName });
+  }
+  if (result.pilgrimName) {
+    rows.push({ label: t("pilgrim"), value: result.pilgrimName });
+  }
+  if (result.companyName) {
+    rows.push({ label: t("company"), value: result.companyName });
+  }
+  if (result.city) {
+    rows.push({ label: t("city"), value: result.city });
+  }
+  return rows;
 }
 
 export function classifyHajjCheck(
@@ -273,8 +303,9 @@ export function classifyHajjCheck(
   if (result.status === "green") {
     return {
       flash: "green",
-      title: result.accommodationName ?? t("rapidGreen"),
-      subtitle: result.pilgrimName,
+      title: t("rapidGreen"),
+      subtitle: result.bagTag,
+      details: buildHajjDetails(result, t),
       hint: result.accommodationAddress,
       hapticKey: "success",
     };
@@ -288,7 +319,8 @@ export function classifyHajjCheck(
     return {
       flash: "yellow",
       title: t("rapidAmberTitle"),
-      subtitle: result.pilgrimName ?? result.bagTag,
+      subtitle: result.bagTag,
+      details: buildHajjDetails(result, t),
       hapticKey: "warning",
     };
   }

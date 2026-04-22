@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 
 import { FLASH_DURATIONS, type FlashColor } from "@/constants/branding";
+import type { FlashDetail } from "@/components/FlashOverlay";
 
 export type HapticKey = "success" | "error" | "duplicate" | "warning";
 
@@ -49,6 +50,7 @@ export interface FlashState {
   title: string;
   subtitle?: string;
   hint?: string;
+  details?: FlashDetail[];
 }
 
 export function useFlashFeedback() {

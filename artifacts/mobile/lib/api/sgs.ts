@@ -535,12 +535,14 @@ export type RawHajjCheck = {
   hasAccommodation?: boolean;
   bagTag?: string;
   tag?: string;
-  pilgrimName?: string;
-  passengerName?: string;
-  accommodationName?: string;
-  hotelName?: string;
-  accommodationAddress?: string;
-  hotelAddress?: string;
+  pilgrimName?: string | null;
+  passengerName?: string | null;
+  accommodationName?: string | null;
+  hotelName?: string | null;
+  accommodationAddress?: string | null;
+  hotelAddress?: string | null;
+  companyName?: string | null;
+  city?: string | null;
   reason?: string;
   message?: string;
 };
@@ -551,21 +553,38 @@ export type HajjCheckResult = {
   pilgrimName?: string;
   accommodationName?: string;
   accommodationAddress?: string;
+  companyName?: string;
+  city?: string;
   /** Machine-readable reason on red (e.g. "unknown_tag", "non_hajj"). */
   reason?: string;
   /** Server-provided human message (used as fallback for the flash). */
   message?: string;
 };
 
+/** Coerce empty strings, the literal `null`, and stringified "null"/"undefined"
+ * to `undefined` so callers can do plain presence checks. */
+function cleanField(v: unknown): string | undefined {
+  if (v == null) return undefined;
+  if (typeof v !== "string") return undefined;
+  const trimmed = v.trim();
+  if (!trimmed) return undefined;
+  const lower = trimmed.toLowerCase();
+  if (lower === "null" || lower === "undefined") return undefined;
+  return trimmed;
+}
+
 function normalizeHajjCheck(
   scannedTag: string,
   raw: RawHajjCheck,
 ): HajjCheckResult {
   const bagTag = String(raw.bagTag ?? raw.tag ?? scannedTag);
-  const pilgrimName = raw.pilgrimName ?? raw.passengerName;
-  const accommodationName = raw.accommodationName ?? raw.hotelName;
-  const accommodationAddress =
-    raw.accommodationAddress ?? raw.hotelAddress;
+  const pilgrimName = cleanField(raw.pilgrimName ?? raw.passengerName);
+  const accommodationName = cleanField(raw.accommodationName ?? raw.hotelName);
+  const accommodationAddress = cleanField(
+    raw.accommodationAddress ?? raw.hotelAddress,
+  );
+  const companyName = cleanField(raw.companyName);
+  const city = cleanField(raw.city);
   const reason = raw.reason ?? raw.message;
   const explicit = (raw.status ?? raw.result ?? "").toLowerCase();
   let status: HajjCheckResult["status"];
@@ -584,6 +603,8 @@ function normalizeHajjCheck(
     pilgrimName,
     accommodationName,
     accommodationAddress,
+    companyName,
+    city,
     reason,
     message: raw.message,
   };

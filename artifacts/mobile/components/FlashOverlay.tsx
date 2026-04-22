@@ -13,16 +13,20 @@ const COLOR_MAP: Record<FlashColor, string> = {
   orange: colors.sgs.flashOrange,
 };
 
+export type FlashDetail = { label: string; value: string };
+
 export function FlashOverlay({
   color,
   title,
   subtitle,
   hint,
+  details,
 }: {
   color: FlashColor;
   title: string;
   subtitle?: string;
   hint?: string;
+  details?: FlashDetail[];
 }) {
   const opacity = useRef(new Animated.Value(0)).current;
   const { isRTL } = useLocale();
@@ -54,6 +58,23 @@ export function FlashOverlay({
             {subtitle ? (
               <Text style={[styles.subtitle, { color: fg }]}>{subtitle}</Text>
             ) : null}
+            {details && details.length > 0 ? (
+              <View style={styles.details}>
+                {details.map((d) => (
+                  <Text
+                    key={`${d.label}::${d.value}`}
+                    style={[
+                      styles.detail,
+                      { color: fg },
+                      isRTL && { writingDirection: "rtl" },
+                    ]}
+                  >
+                    <Text style={styles.detailLabel}>{d.label}: </Text>
+                    {d.value}
+                  </Text>
+                ))}
+              </View>
+            ) : null}
             {hint ? (
               <Text style={[styles.hint, { color: fg }, isRTL && { writingDirection: "rtl" }]}>{hint}</Text>
             ) : null}
@@ -72,6 +93,23 @@ export function FlashOverlay({
         <Text style={[styles.title, { color: fg }]}>{title}</Text>
         {subtitle ? (
           <Text style={[styles.subtitle, { color: fg }]}>{subtitle}</Text>
+        ) : null}
+        {details && details.length > 0 ? (
+          <View style={styles.details}>
+            {details.map((d) => (
+              <Text
+                key={`${d.label}::${d.value}`}
+                style={[
+                  styles.detail,
+                  { color: fg },
+                  isRTL && { writingDirection: "rtl" },
+                ]}
+              >
+                <Text style={styles.detailLabel}>{d.label}: </Text>
+                {d.value}
+              </Text>
+            ))}
+          </View>
         ) : null}
         {hint ? (
           <Text style={[styles.hint, { color: fg }, isRTL && { writingDirection: "rtl" }]}>{hint}</Text>
@@ -112,5 +150,21 @@ const styles = StyleSheet.create({
     marginTop: 16,
     textAlign: "center",
     opacity: 0.8,
+  },
+  details: {
+    marginTop: 12,
+    alignSelf: "stretch",
+    maxWidth: "100%",
+  },
+  detail: {
+    fontFamily: FONTS.bodyMedium,
+    fontSize: 18,
+    lineHeight: 24,
+    marginTop: 4,
+    textAlign: "center",
+  },
+  detailLabel: {
+    fontFamily: FONTS.bodyBold,
+    opacity: 0.85,
   },
 });

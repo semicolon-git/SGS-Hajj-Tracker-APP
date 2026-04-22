@@ -302,6 +302,7 @@ export default function RapidScanScreen() {
           let title: string;
           let subtitle: string | undefined;
           let hint: string | undefined;
+          let details: { label: string; value: string }[] | undefined;
           let hapticKey: "success" | "warning" | "error";
           if (!isHajj) {
             status = "red";
@@ -310,13 +311,26 @@ export default function RapidScanScreen() {
             hapticKey = "error";
           } else if (accommodation) {
             status = "green";
-            title = accommodation;
-            subtitle = cached.pilgrimName || cached.tagNumber;
+            // Match the live-API path: status string as title, bag tag
+            // as subtitle, labelled rows for what we know. Cached scans
+            // never carry company / city, so those rows are simply
+            // absent and the layout collapses cleanly.
+            title = t("rapidGreen");
+            subtitle = cached.tagNumber;
+            details = [
+              { label: t("hotel"), value: accommodation },
+              ...(cached.pilgrimName
+                ? [{ label: t("pilgrim"), value: cached.pilgrimName }]
+                : []),
+            ];
             hapticKey = "success";
           } else {
             status = "amber";
             title = t("rapidAmberTitle");
-            subtitle = cached.pilgrimName || cached.tagNumber;
+            subtitle = cached.tagNumber;
+            details = cached.pilgrimName
+              ? [{ label: t("pilgrim"), value: cached.pilgrimName }]
+              : undefined;
             hapticKey = "warning";
           }
 
@@ -325,7 +339,7 @@ export default function RapidScanScreen() {
           // Sticky flash — duration 0 means the panel stays on screen
           // until the next scan replaces it.
           trigger(
-            { color: flashColor, title, subtitle, hint },
+            { color: flashColor, title, subtitle, hint, details },
             hapticKey,
             0,
           );
@@ -432,6 +446,7 @@ export default function RapidScanScreen() {
             title: decision.title,
             subtitle: decision.subtitle,
             hint: decision.hint,
+            details: decision.details,
           },
           decision.hapticKey,
           0,
@@ -632,6 +647,7 @@ export default function RapidScanScreen() {
             title={flash.title}
             subtitle={flash.subtitle}
             hint={flash.hint}
+            details={flash.details}
           />
         ) : null}
 
