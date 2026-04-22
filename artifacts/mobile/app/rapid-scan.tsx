@@ -312,9 +312,9 @@ export default function RapidScanScreen() {
           } else if (accommodation) {
             status = "green";
             // Match the live-API path: status string as title, bag tag
-            // as subtitle, labelled rows for what we know. Cached scans
-            // never carry company / city, so those rows are simply
-            // absent and the layout collapses cleanly.
+            // as subtitle, labelled rows for what we know. Cached
+            // manifests synced before the company/city extension simply
+            // omit those rows and the layout collapses cleanly.
             title = t("rapidGreen");
             subtitle = cached.tagNumber;
             details = [
@@ -322,15 +322,30 @@ export default function RapidScanScreen() {
               ...(cached.pilgrimName
                 ? [{ label: t("pilgrim"), value: cached.pilgrimName }]
                 : []),
+              ...(cached.companyName
+                ? [{ label: t("company"), value: cached.companyName }]
+                : []),
+              ...(cached.city
+                ? [{ label: t("city"), value: cached.city }]
+                : []),
             ];
             hapticKey = "success";
           } else {
             status = "amber";
             title = t("rapidAmberTitle");
             subtitle = cached.tagNumber;
-            details = cached.pilgrimName
-              ? [{ label: t("pilgrim"), value: cached.pilgrimName }]
-              : undefined;
+            details = [
+              ...(cached.pilgrimName
+                ? [{ label: t("pilgrim"), value: cached.pilgrimName }]
+                : []),
+              ...(cached.companyName
+                ? [{ label: t("company"), value: cached.companyName }]
+                : []),
+              ...(cached.city
+                ? [{ label: t("city"), value: cached.city }]
+                : []),
+            ];
+            if (details.length === 0) details = undefined;
             hapticKey = "warning";
           }
 

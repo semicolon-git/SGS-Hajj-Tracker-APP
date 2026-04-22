@@ -280,6 +280,20 @@ export interface ManifestBag {
    * heuristic). Used by Rapid Scan's local-first classifier.
    */
   isHajjBag?: boolean;
+  /**
+   * Operating company that owns the pilgrim group (e.g. "Al Rajhi
+   * Tawafa"). Optional because the legacy listing endpoint did not
+   * return it; cached when the server provides it so offline Rapid
+   * Scan flashes can show the same context as live ones. Absent on
+   * pre-extension cached manifests — UI must fall back to hiding the
+   * row rather than rendering an empty value.
+   */
+  companyName?: string;
+  /**
+   * Destination city for the pilgrim (typically "Makkah" or "Madinah").
+   * Optional for the same reason as `companyName`.
+   */
+  city?: string;
 }
 
 export interface ScanRequest {
@@ -389,6 +403,16 @@ interface ServerBag {
   airlineTag?: string | null;
   airlineBagTag?: string | null;
   isHajjBag?: boolean | null;
+  // Pilgrim metadata used by Rapid Scan's offline cached path. The live
+  // backend has surfaced these under several names across builds (top-level
+  // fields, nested `pilgrim.*`, or `group.*`); we accept any combination
+  // and let `cleanField` discard empty / null-string sentinels.
+  companyName?: string | null;
+  company?: string | null;
+  operatingCompany?: string | null;
+  city?: string | null;
+  destinationCity?: string | null;
+  pilgrimCity?: string | null;
 }
 
 function normalizeFlight(f: ServerFlight): Flight {
@@ -463,6 +487,8 @@ function normalizeBag(b: ServerBag): ManifestBag {
       b.iataTag ?? b.iataLicensePlate ?? b.licensePlate ?? b.airlineTag ?? b.airlineBagTag,
     ),
     isHajjBag: b.isHajjBag ?? undefined,
+    companyName: cleanField(b.companyName ?? b.company ?? b.operatingCompany),
+    city: cleanField(b.city ?? b.destinationCity ?? b.pilgrimCity),
   };
 }
 
