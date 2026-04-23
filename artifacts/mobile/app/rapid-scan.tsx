@@ -11,6 +11,7 @@ import {
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -38,6 +39,8 @@ import {
 } from "@/lib/db/storage";
 import {
   enrichCachedBagWithHajjCheck,
+  getFlightAirlineCode,
+  getFlightDisplayLabel,
   sgsApi,
   type BagGroup,
   type Flight,
@@ -48,19 +51,17 @@ import { classifyHajjCheck, normalizeTag } from "@/lib/scanLogic";
 
 const DEBOUNCE_MS = 1500;
 
-// Picker-row helpers — kept inline (small, used in one place). Mirror
-// the formatting logic on the home flights list so the agent sees the
-// same airline chip + flight label everywhere.
-function pickerExtractAirlineCode(flightNumber: string): string {
-  if (!flightNumber) return "";
-  const m = /^([A-Z]{1,3})\s*\d/i.exec(flightNumber.trim());
-  return m ? m[1].toUpperCase() : "";
+// Airline + label resolution lives in `lib/api/sgs.ts` so every screen
+// formats flights identically. See `getFlightAirlineCode` /
+// `getFlightDisplayLabel` for the contract.
+
+// Strip whitespace and lowercase a string for the flight-search filter.
+// We compare both the query and the haystack in this normalized form so
+// "qp836", "QP 836", and "qp 836" all match the same flight.
+function normalizeFlightSearch(s: string): string {
+  return s.replace(/\s+/g, "").toLowerCase();
 }
-function pickerFormatFlightLabel(flightNumber: string): string {
-  if (!flightNumber) return "";
-  const m = /^([A-Z]{1,3})\s*(\d.*)$/i.exec(flightNumber.trim());
-  return m ? `${m[1].toUpperCase()} ${m[2]}` : flightNumber;
-}
+
 // Date format for picker rows: "Wed 22 Apr · 9:30 PM" — we want both
 // the date and the time visible so the agent never picks the wrong
 // day's flight when the same flight number runs daily.
@@ -136,6 +137,25 @@ export default function RapidScanScreen() {
   const [pickerOpen, setPickerOpen] = useState(false);
   const [flights, setFlights] = useState<Flight[]>([]);
   const [flightsLoading, setFlightsLoading] = useState(false);
+  const [flightSearch, setFlightSearch] = useState("");
+
+  // Filter the picker list by case-insensitive substring against the
+  // composed flight label ("QP 836"), the bare flight number, the
+  // airline code, and the origin airport. Both sides are stripped of
+  // whitespace so "qp836", "QP 836", and "qp 836" all match the same
+  // flight.
+  const filteredFlights = useMemo(() => {
+    const q = normalizeFlightSearch(flightSearch);
+    if (!q) return flights;
+    return flights.filter((f) => {
+      const label = getFlightDisplayLabel(f);
+      const code = getFlightAirlineCode(f);
+      const hay = normalizeFlightSearch(
+        [label, f.flightNumber, code, f.destination].filter(Boolean).join(" "),
+      );
+      return hay.includes(q);
+    });
+  }, [flights, flightSearch]);
   const lastScan = useRef<{ tag: string; at: number } | null>(null);
   const deviceIdRef = useRef<string | null>(null);
 
@@ -594,7 +614,7 @@ export default function RapidScanScreen() {
     <View style={styles.flex}>
       <ScreenHeader
         title={t("rapidScan")}
-        subtitle={flight ? flight.flightNumber : t("noFlight")}
+        subtitle={flight ? getFlightDisplayLabel(flight) : t("noFlight")}
         onBack={() => router.back()}
         right={
           <View style={styles.headerRight}>
@@ -620,7 +640,7 @@ export default function RapidScanScreen() {
         >
           <Feather name="navigation" size={14} color={colors.sgs.textPrimary} />
           <Text style={[styles.flightChipText, isRTL && { writingDirection: "rtl" }]}>
-            {flight ? flight.flightNumber : t("pickFlight")}
+            {flight ? getFlightDisplayLabel(flight) : t("pickFlight")}
           </Text>
         </Pressable>
         <Pressable
@@ -734,25 +754,47 @@ export default function RapidScanScreen() {
         visible={pickerOpen}
         transparent
         animationType="fade"
-        onRequestClose={() => setPickerOpen(false)}
+        onRequestClose={() => {
+          setFlightSearch("");
+          setPickerOpen(false);
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{t("pickFlight")}</Text>
+            <TextInput
+              value={flightSearch}
+              onChangeText={setFlightSearch}
+              placeholder={t("searchFlights")}
+              placeholderTextColor={colors.sgs.textMuted}
+              autoFocus
+              autoCapitalize="characters"
+              autoCorrect={false}
+              returnKeyType="search"
+              style={[
+                styles.searchInput,
+                isRTL && { writingDirection: "rtl", textAlign: "right" },
+              ]}
+            />
             {flightsLoading ? (
               <View style={{ padding: 24, alignItems: "center" }}>
                 <ActivityIndicator color={colors.sgs.green} />
               </View>
+            ) : filteredFlights.length === 0 ? (
+              <View style={{ padding: 24, alignItems: "center" }}>
+                <Text style={styles.flightRowSub}>{t("noFlightsMatch")}</Text>
+              </View>
             ) : (
               <FlatList
-                data={flights}
+                data={filteredFlights}
                 keyExtractor={(f) => f.id}
+                keyboardShouldPersistTaps="handled"
                 ItemSeparatorComponent={() => (
                   <View style={{ height: 1, backgroundColor: colors.sgs.border }} />
                 )}
                 style={{ maxHeight: 360 }}
                 renderItem={({ item }) => {
-                  const airline = pickerExtractAirlineCode(item.flightNumber);
+                  const airline = getFlightAirlineCode(item);
                   const when = pickerFormatFlightWhen(item.departureTime, locale);
                   // Compose the meta line so we don't render a stray
                   // separator when one side is empty (legacy manifests
@@ -762,7 +804,10 @@ export default function RapidScanScreen() {
                     .join(" · ");
                   return (
                     <Pressable
-                      onPress={() => onPickFlight(item)}
+                      onPress={() => {
+                        setFlightSearch("");
+                        onPickFlight(item);
+                      }}
                       style={({ pressed }) => [
                         styles.flightRow,
                         pressed && { backgroundColor: colors.sgs.surfaceElevated },
@@ -775,7 +820,7 @@ export default function RapidScanScreen() {
                           </View>
                         ) : null}
                         <Text style={styles.flightRowTitle}>
-                          {pickerFormatFlightLabel(item.flightNumber)}
+                          {getFlightDisplayLabel(item)}
                         </Text>
                       </View>
                       {meta ? (
@@ -790,7 +835,10 @@ export default function RapidScanScreen() {
             <PrimaryButton
               variant="ghost"
               label={t("cancel")}
-              onPress={() => setPickerOpen(false)}
+              onPress={() => {
+                setFlightSearch("");
+                setPickerOpen(false);
+              }}
             />
           </View>
         </View>
@@ -1111,6 +1159,18 @@ const styles = StyleSheet.create({
     color: colors.sgs.textPrimary,
     fontFamily: FONTS.bodyBold,
     fontSize: 18,
+    marginBottom: 12,
+  },
+  searchInput: {
+    backgroundColor: colors.sgs.surfaceElevated,
+    borderColor: colors.sgs.border,
+    borderWidth: 1,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: colors.sgs.textPrimary,
+    fontFamily: FONTS.body,
+    fontSize: 14,
     marginBottom: 12,
   },
   flightRow: {

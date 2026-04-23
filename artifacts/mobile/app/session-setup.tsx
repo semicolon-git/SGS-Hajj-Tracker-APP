@@ -27,7 +27,12 @@ import colors from "@/constants/colors";
 import { useAuth } from "@/contexts/AuthContext";
 import { useLocale } from "@/contexts/LocaleContext";
 import { useSession } from "@/contexts/SessionContext";
-import { sgsApi, type Flight } from "@/lib/api/sgs";
+import {
+  getFlightAirlineCode,
+  getFlightDisplayLabel,
+  sgsApi,
+  type Flight,
+} from "@/lib/api/sgs";
 import type { StringKey } from "@/lib/i18n";
 
 export default function SessionSetupScreen() {
@@ -242,28 +247,11 @@ function formatTimeAgo(iso: string, t: (k: StringKey) => string): string {
   return new Date(iso).toLocaleString();
 }
 
-// Returns the flight name with the IATA airline code prefixed. The
-// SGS backend has historically returned `flightNo` either as a full
-// "XY1552" or as just digits "1552". When it's the latter we don't
-// know the carrier, so we fall back to the raw flightNumber rather
-// than fabricating one. When it already starts with letters we split
-// them out with a space so the IATA code reads as a discrete token
-// ("XY 1552") instead of being glued to the flight digits.
-function formatFlightLabel(flightNumber: string): string {
-  if (!flightNumber) return "";
-  const m = /^([A-Z]{1,3})\s*(\d.*)$/i.exec(flightNumber.trim());
-  if (m) return `${m[1].toUpperCase()} ${m[2]}`;
-  return flightNumber;
-}
-
-// Pull just the IATA airline prefix (e.g. "XY", "TK") out of a flight
-// number for use as a standalone chip. Returns "" when the number
-// doesn't start with letters so callers can hide the chip cleanly.
-function extractAirlineCode(flightNumber: string): string {
-  if (!flightNumber) return "";
-  const m = /^([A-Z]{1,3})\s*\d/i.exec(flightNumber.trim());
-  return m ? m[1].toUpperCase() : "";
-}
+// Airline + label resolution lives in `lib/api/sgs.ts` so every screen
+// formats flights identically. Prefer the discrete server `airlineCode`
+// field; fall back to regex-extracting it from a glued `flightNumber`
+// for legacy cached payloads. See `getFlightAirlineCode` /
+// `getFlightDisplayLabel` for the contract.
 
 // Date format: "Wed 22 Apr · 9:30 PM". Uses the active app locale so
 // Arabic mode renders the weekday/month in Arabic without further work.
@@ -300,14 +288,14 @@ function FlightCard({
     >
       <View style={styles.cardRow}>
         <View style={styles.titleRow}>
-          {extractAirlineCode(flight.flightNumber) ? (
+          {getFlightAirlineCode(flight) ? (
             <View style={styles.airlineChip}>
               <Text style={styles.airlineChipTxt}>
-                {extractAirlineCode(flight.flightNumber)}
+                {getFlightAirlineCode(flight)}
               </Text>
             </View>
           ) : null}
-          <Text style={styles.cardTitle}>{formatFlightLabel(flight.flightNumber)}</Text>
+          <Text style={styles.cardTitle}>{getFlightDisplayLabel(flight)}</Text>
         </View>
         {flight.assigned ? <AssignedBadge /> : null}
       </View>

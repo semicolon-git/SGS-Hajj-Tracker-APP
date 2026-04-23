@@ -37,6 +37,7 @@ import {
 import { decideScan, normalizeTag, parseBtpPdf417 } from "@/lib/scanLogic";
 import {
   countReceivedFromManifest,
+  getFlightDisplayLabel,
   sgsApi,
   type BagGroup,
   type ManifestBag,
@@ -787,7 +788,7 @@ export default function ScanScreen() {
   return (
     <View style={styles.flex}>
       <ScreenHeader
-        title={session.session.flight.flightNumber}
+        title={getFlightDisplayLabel(session.session.flight)}
         subtitle={
           isRTL
             ? `${pct}% · ${flightScanned}/${flightExpected} ${t("bags")}`
