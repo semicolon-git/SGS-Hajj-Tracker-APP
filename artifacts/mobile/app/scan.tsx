@@ -35,7 +35,12 @@ import {
   useZebraScanner,
 } from "@/hooks/useScanner";
 import { decideScan, normalizeTag, parseBtpPdf417 } from "@/lib/scanLogic";
-import { sgsApi, type BagGroup, type ManifestBag } from "@/lib/api/sgs";
+import {
+  countReceivedFromManifest,
+  sgsApi,
+  type BagGroup,
+  type ManifestBag,
+} from "@/lib/api/sgs";
 import {
   cacheGroups,
   cacheManifest,
@@ -242,6 +247,48 @@ export default function ScanScreen() {
     return out;
   }, [manifestQs]);
 
+  // Honest per-group "received" counts derived from the cached manifest.
+  // The live SGS `/api/flight-groups` `actualBagCount` field currently
+  // mirrors `expectedBagCount` (see backend ask in `.local/tasks/task-58.md`)
+  // so the server number is unusable as a progress signal. We instead
+  // count bags whose status is `scanned` (which `normalizeBag` collapses
+  // from `COLLECTED_FROM_BELT` and any downstream status), matching the
+  // supervisor's contract for "received". Per-group entry is `undefined`
+  // until that group's manifest query resolves so the UI can fall back
+  // to the server's `scannedBags` rather than render 0/Y during the
+  // bootstrap window.
+  const manifestCountByGroup = useMemo(() => {
+    const out: Record<string, number | undefined> = {};
+    groups.forEach((g, i) => {
+      const bags = manifestQs[i]?.data?.bags;
+      out[g.id] = bags ? countReceivedFromManifest(bags) : undefined;
+    });
+    return out;
+    // groups identity changes every refetch; manifestQs is recomputed each
+    // render, so depending on its data via length+timestamps would over-fire.
+    // The cheap reduce on every render is fine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groups, manifestQs]);
+
+  // Refs that mirror the latest values of the at-100% guard inputs so
+  // `handleScan` (held by `useZebraScanner` for the lifetime of the
+  // screen) always sees the freshest count without churning its identity
+  // on every scan-delta tick or manifest refetch. Re-creating handleScan
+  // would re-register the native Zebra listener, which we explicitly
+  // want to avoid mid-shift.
+  const groupsRef = useRef<BagGroup[]>(groups);
+  const manifestCountByGroupRef = useRef(manifestCountByGroup);
+  const scanDeltaRef = useRef(scanDelta);
+  useEffect(() => {
+    groupsRef.current = groups;
+  }, [groups]);
+  useEffect(() => {
+    manifestCountByGroupRef.current = manifestCountByGroup;
+  }, [manifestCountByGroup]);
+  useEffect(() => {
+    scanDeltaRef.current = scanDelta;
+  }, [scanDelta]);
+
   // ---------------------------------------------------------------
   // Manifest health (drives the load-failure / stale-cache banners).
   //   - manifestErrorHard : the live fetch failed AND no usable cache
@@ -281,15 +328,22 @@ export default function ScanScreen() {
     manifestQs.forEach((q) => q.refetch());
   }, [groupsQ, manifestQs]);
 
-  // Flight-level totals shown in the header. Server-authoritative
-  // `scannedBags` from the groups query, plus any local deltas that
-  // haven't been refetched yet.
+  // Flight-level totals shown in the header. Prefer the manifest-derived
+  // honest count per group; fall back to the server's `scannedBags` plus
+  // any local optimistic delta only for groups whose manifest hasn't
+  // resolved yet (bootstrap window). Once a group's manifest loads, the
+  // green-scan handler optimistically patches the cached bag's status to
+  // `scanned`, so the honest count already reflects in-flight scans and
+  // the local delta is no longer needed for that group.
   const flightExpected = groups.reduce((s, g) => s + g.expectedBags, 0);
-  const flightScannedServer = groups.reduce((s, g) => s + g.scannedBags, 0);
-  const flightDelta = Object.values(scanDelta).reduce((s, n) => s + n, 0);
+  const flightScannedRaw = groups.reduce((s, g) => {
+    const honest = manifestCountByGroup[g.id];
+    if (honest != null) return s + honest;
+    return s + g.scannedBags + (scanDelta[g.id] ?? 0);
+  }, 0);
   const flightScanned = Math.min(
-    flightExpected || flightScannedServer + flightDelta,
-    flightScannedServer + flightDelta,
+    flightExpected || flightScannedRaw,
+    flightScannedRaw,
   );
 
   // Auto-request camera permission on consumer phones
@@ -490,6 +544,40 @@ export default function ScanScreen() {
       // ----------------------------------------------------------------
 
       lastScan.current = { tag, at: now, flash: decision.flash };
+
+      // At-100% over-scan guard. If the scan would otherwise land green
+      // on a group whose honest received count already meets or exceeds
+      // its expected count, demote to AMBER with a clear "Group already
+      // complete — X / Y" message so the agent knows progress is not
+      // being credited. We deliberately still enqueue the scan further
+      // below so the server retains a record of the over-scan event,
+      // and we skip the local mark / cache patch / scanDelta bump so
+      // the displayed count cannot run past expected. Honest count
+      // comes from the cached manifest; if a group's manifest hasn't
+      // resolved yet we fall back to the server's `scannedBags` + the
+      // optimistic local delta, which preserves the pre-existing
+      // behaviour during the bootstrap window.
+      if (decision.flash === "green" && acceptGroupId) {
+        const acceptingGroup = groupsRef.current.find(
+          (g) => g.id === acceptGroupId,
+        );
+        if (acceptingGroup && acceptingGroup.expectedBags > 0) {
+          const honest = manifestCountByGroupRef.current[acceptGroupId];
+          const currentReceived =
+            honest != null
+              ? honest
+              : acceptingGroup.scannedBags +
+                (scanDeltaRef.current[acceptGroupId] ?? 0);
+          if (currentReceived >= acceptingGroup.expectedBags) {
+            decision = {
+              flash: "amber",
+              title: t("groupAlreadyComplete"),
+              subtitle: `${currentReceived} / ${acceptingGroup.expectedBags}`,
+              hapticKey: "duplicate",
+            };
+          }
+        }
+      }
 
       // For green hits, replace the bare "COLLECTED" with a title that
       // carries the destination accommodation so the agent can confirm
@@ -792,6 +880,7 @@ export default function ScanScreen() {
         groups={groups}
         loading={groupsQ.isLoading}
         scanDelta={scanDelta}
+        manifestCountByGroup={manifestCountByGroup}
         pulseGroupId={pulseGroupId}
         pulseAnim={pulseAnim}
         showBulkReceive={showBulkOnCard}
@@ -983,6 +1072,7 @@ function GroupCardsStrip({
   groups,
   loading,
   scanDelta,
+  manifestCountByGroup,
   pulseGroupId,
   pulseAnim,
   showBulkReceive,
@@ -992,6 +1082,7 @@ function GroupCardsStrip({
   groups: BagGroup[];
   loading: boolean;
   scanDelta: Record<string, number>;
+  manifestCountByGroup: Record<string, number | undefined>;
   pulseGroupId: string | null;
   pulseAnim: Animated.Value;
   showBulkReceive: boolean;
@@ -1030,10 +1121,11 @@ function GroupCardsStrip({
     );
   }
 
-  const totalScanned = groups.reduce(
-    (s, g) => s + g.scannedBags + (scanDelta[g.id] ?? 0),
-    0,
-  );
+  const totalScanned = groups.reduce((s, g) => {
+    const honest = manifestCountByGroup[g.id];
+    if (honest != null) return s + honest;
+    return s + g.scannedBags + (scanDelta[g.id] ?? 0);
+  }, 0);
   const totalExpected = groups.reduce((s, g) => s + g.expectedBags, 0);
   const pct = totalExpected
     ? Math.min(100, Math.round((totalScanned / totalExpected) * 100))
@@ -1088,6 +1180,7 @@ function GroupCardsStrip({
               key={g.id}
               group={g}
               delta={scanDelta[g.id] ?? 0}
+              honestCount={manifestCountByGroup[g.id]}
               pulse={pulseGroupId === g.id}
               pulseAnim={pulseAnim}
               showBulkReceive={showBulkReceive}
@@ -1104,6 +1197,7 @@ function GroupCardsStrip({
 function GroupCard({
   group,
   delta,
+  honestCount,
   pulse,
   pulseAnim,
   showBulkReceive,
@@ -1112,13 +1206,17 @@ function GroupCard({
 }: {
   group: BagGroup;
   delta: number;
+  honestCount: number | undefined;
   pulse: boolean;
   pulseAnim: Animated.Value;
   showBulkReceive: boolean;
   onBulkReceive: () => void;
   t: (k: StringKeyT) => string;
 }) {
-  const scanned = group.scannedBags + delta;
+  // Prefer the manifest-derived honest count; fall back to the server's
+  // `scannedBags` plus optimistic delta only while the per-group manifest
+  // is still loading. See `manifestCountByGroup` upstream for the why.
+  const scanned = honestCount != null ? honestCount : group.scannedBags + delta;
   const expected = group.expectedBags;
   const pct = expected ? Math.min(100, Math.round((scanned / expected) * 100)) : 0;
   const status = statusForGroup({
