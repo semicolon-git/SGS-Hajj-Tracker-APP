@@ -17,6 +17,16 @@
         "EXPO_PUBLIC_SGS_API_URL": "https://api-bagtracker-prod.saudiags.com"
       }
     },
+    "local-apk": {
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease"
+      },
+      "env": {
+        "EXPO_PUBLIC_SGS_API_URL": "https://api-bagtracker-prod.saudiags.com"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "env": {
