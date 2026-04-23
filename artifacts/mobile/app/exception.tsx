@@ -24,13 +24,26 @@ import colors from "@/constants/colors";
 import { useLocale } from "@/contexts/LocaleContext";
 import { useScanQueue } from "@/contexts/ScanQueueContext";
 import { useSession } from "@/contexts/SessionContext";
-import { sgsApi } from "@/lib/api/sgs";
+import { ApiError, formatApiErrorForUser, sgsApi } from "@/lib/api/sgs";
 
+// IMPORTANT: enum values here MUST exactly match the server's
+// `exceptionType` zod enum on POST /api/exceptions/raise. Verified
+// live on api-bagtracker-prod.saudiags.com on 2026-04-23 (task #68):
+// the server accepts exactly MISSING | MISMATCH | DAMAGED | DELAYED.
+// Anything else returns
+//   { message: "Validation failed",
+//     errors: { fieldErrors: { exceptionType: ["Invalid enum value..."] } } }
+// which used to surface to the agent as just "Error". Previously this
+// list also had CUSTOMS_HOLD, which was the silent culprit — every
+// agent who picked it got the failure with no actionable detail.
+// If product wants CUSTOMS_HOLD or another reason added back, it has
+// to be added to the server enum first; a verbatim backend ask is
+// recorded in .local/tasks/task-58.md.
 const REASONS = [
   { value: "MISSING", label: "Missing" },
+  { value: "MISMATCH", label: "Mismatch" },
   { value: "DAMAGED", label: "Damaged" },
   { value: "DELAYED", label: "Delayed" },
-  { value: "CUSTOMS_HOLD", label: "Customs hold" },
 ] as const;
 
 /**
@@ -246,21 +259,28 @@ function ExceptionScreen() {
       );
     } catch (err) {
       // Log the failed payload + raw error so the next reproduction can
-      // be captured from the device log and sent to backend. The
-      // current contract for /api/bags/exception is documented in the
-      // task asks — when this fires in the field, paste the log into
-      // the backend ticket.
+      // be captured from the device log and sent to backend.
       const e = err as Error;
       console.error("[exception] submit failed", {
         payload,
         error: e?.message,
+        // Surface the server's structured body when present so the next
+        // log line shows the exact zod fieldErrors — without this the
+        // log only had "Validation failed" and we couldn't tell which
+        // field the server rejected.
+        body: e instanceof ApiError ? e.body : undefined,
         stack: e?.stack,
       });
+      // Pull the server's per-field detail into the alert body when the
+      // error came from our request() helper. Generic Errors (network
+      // failure, JS errors) fall back to message-or-Unknown.
+      const detail =
+        e instanceof ApiError
+          ? formatApiErrorForUser(e)
+          : e?.message || "Unknown error.";
       Alert.alert(
         t("exceptionFailedTitle"),
-        e?.message
-          ? `${e.message}\n\nThe full request has been written to the device log.`
-          : "Unknown error. The full request has been written to the device log.",
+        `${detail}\n\nThe full request has been written to the device log.`,
       );
     } finally {
       setBusy(false);

@@ -66,6 +66,47 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Build a one-line user-facing message from an ApiError.
+ *
+ * The SGS backend uses zod-validated routes that, on a 4xx, return a
+ * body of shape `{ message: string, errors?: { fieldErrors: Record<string,
+ * string[]>, formErrors: string[] } }`. Surfacing only `error.message`
+ * collapses every validation failure into the same generic
+ * "Validation failed" string with no clue which field is wrong (this
+ * was the root cause of task #68: agents got "Error" with no detail
+ * when picking the unsupported `CUSTOMS_HOLD` exception reason).
+ *
+ * Returns the server message plus the first per-field error (or first
+ * formError) when present, so an agent sees e.g.
+ *   "Validation failed — exceptionType: Invalid enum value..."
+ * Falls back to `error.message` when the body has no zod-shaped errors.
+ */
+export function formatApiErrorForUser(err: ApiError): string {
+  const base = err.message || `Request failed (${err.status})`;
+  const body = err.body as
+    | {
+        message?: string;
+        errors?: {
+          fieldErrors?: Record<string, string[] | undefined>;
+          formErrors?: string[];
+        };
+      }
+    | undefined;
+  const errors = body?.errors;
+  if (errors?.fieldErrors) {
+    for (const [field, msgs] of Object.entries(errors.fieldErrors)) {
+      if (msgs && msgs.length > 0) {
+        return `${base} — ${field}: ${msgs[0]}`;
+      }
+    }
+  }
+  if (errors?.formErrors && errors.formErrors.length > 0) {
+    return `${base} — ${errors.formErrors[0]}`;
+  }
+  return base;
+}
+
 type RequestOpts = RequestInit & { credentials?: RequestCredentials };
 
 // ---------- Request interceptor / logger ----------

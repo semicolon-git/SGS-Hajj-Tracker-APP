@@ -8,7 +8,13 @@ import React, {
   useState,
 } from "react";
 
-import { SGS_BASE_URL, sgsApi, type ScanRequest } from "@/lib/api/sgs";
+import {
+  ApiError,
+  SGS_BASE_URL,
+  formatApiErrorForUser,
+  sgsApi,
+  type ScanRequest,
+} from "@/lib/api/sgs";
 import {
   buildPlaceholderTag,
   clearOpDeadLetter,
@@ -270,6 +276,16 @@ export function ScanQueueProvider({ children }: { children: React.ReactNode }) {
         }
         return { ok: true, finalTag: res.tagNumber, id: res.id };
       } catch (err) {
+        // Re-message ApiErrors so the dead-letter `lastError` (which the
+        // shift-summary screen surfaces verbatim) carries the server's
+        // per-field validation detail instead of a generic "Validation
+        // failed". Mirrors the screen-side alert formatting (task #68).
+        if (err instanceof ApiError) {
+          return {
+            ok: false,
+            err: new Error(formatApiErrorForUser(err)),
+          };
+        }
         return { ok: false, err: err as Error };
       }
     },
